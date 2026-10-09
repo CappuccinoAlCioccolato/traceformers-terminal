@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Local working material: the two Grok builds and the brainstorming notes stay out of the public repo.
+/mvp/
+/mvp-integration/
+/brainstorming-*
