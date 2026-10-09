@@ -53,6 +53,19 @@ Consequences: each browser has its own registry, and nothing is shared between v
 
 Sign-in uses a wallet signature (`LinkWallet`), with an EIP-6963 browser wallet or a session wallet whose key stays in the browser. Signing in with X needs a server and is not part of the static build; instead, you can type your X username in the wallet panel so shared talks tag you. The six network holders have no X accounts, so posts name them by label and never tag anyone at random.
 
+## Fork it
+
+The repository is public and MIT licensed: fork it and deploy your own copy.
+
+1. Fork the repository on GitHub.
+2. In the fork, open Settings → Pages and set Source to GitHub Actions.
+3. Open the Actions tab and enable workflows (GitHub disables them on new forks).
+4. Push to `main` or run the "Deploy to GitHub Pages" workflow. The site is served at `https://<you>.github.io/<repo>/`: the workflow takes the base path from the repository name, so renaming the fork just works.
+
+## Next
+
+Phase 2 explores real encryption built from the code the Trace tokens are made of: see [docs/phase-2-encryption.md](docs/phase-2-encryption.md).
+
 ## Develop
 
 ```sh
@@ -73,3 +86,7 @@ npm run build    # static output in dist/
 ## Origin
 
 The project merges two earlier prototypes: the terminal wall MVP (characters speaking, encoders, bases, automatic answers, PNG export) and a later integration that added the signature protocol, the graph, the idle pool, and the leaderboard. This repository keeps the MVP's look and basic interaction and builds the integration's protocol into it.
+
+## License
+
+The code is MIT licensed (see [LICENSE](LICENSE)). The Trace artwork in `public/trace/`, the Trace and Traceforms names, and the collection belong to 0xvesty and are not covered by that license.
