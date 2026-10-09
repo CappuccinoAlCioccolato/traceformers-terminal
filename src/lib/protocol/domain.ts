@@ -77,10 +77,11 @@ export const completeTypes = {
   ],
 } as const;
 
-export const transferTypes = {
-  Transfer: [
+/** Hands the signing rights of a piece to another address inside this registry. Not a sale, not an Ethereum transfer. */
+export const delegateTypes = {
+  Delegate: [
     { name: "nft", type: "string" },
-    { name: "recipient", type: "address" },
+    { name: "to", type: "address" },
     { name: "nonce", type: "uint256" },
   ],
 } as const;
@@ -142,8 +143,8 @@ export const completeSpec = (m: { character: string; base: string; encoder: stri
   message: { ...m, nonce: BigInt(m.nonce) },
 });
 
-export const transferSpec = (m: { nft: string; recipient: string; nonce: number }): TypedSpec => ({
-  types: transferTypes,
-  primaryType: "Transfer",
-  message: { nft: m.nft, recipient: getAddress(m.recipient), nonce: BigInt(m.nonce) },
+export const delegateSpec = (m: { nft: string; to: string; nonce: number }): TypedSpec => ({
+  types: delegateTypes,
+  primaryType: "Delegate",
+  message: { nft: m.nft, to: getAddress(m.to), nonce: BigInt(m.nonce) },
 });

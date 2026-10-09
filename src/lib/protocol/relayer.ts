@@ -15,7 +15,7 @@ import {
   openSpec,
   respondSpec,
   revokeSpec,
-  transferSpec,
+  delegateSpec,
   type TypedSpec,
 } from "./domain";
 import type { Asset, Conversation, IdleOffer, LogKind, Registry, Result } from "./types";
@@ -67,7 +67,7 @@ export async function recover(spec: TypedSpec, signature: string): Promise<strin
 }
 
 function normAddress(value: string): string {
-  if (!isAddress(value.trim())) fail("Invalid address.");
+  if (!isAddress(value.trim())) fail("That is not an Ethereum address: 0x followed by 40 hex characters.");
   return getAddress(value.trim()).toLowerCase();
 }
 
@@ -416,7 +416,7 @@ export async function submitIdle(
     const excluded = canonicalExcluded(input.excluded.split(","));
     if (excluded !== input.excluded) fail("Excluded ids must be sorted and unique.");
     for (const id of excluded ? excluded.split(",") : []) {
-      if (mustAsset(registry, id).role !== "character") fail("Only characters can be excluded.");
+      if (!registry.assets.some((item) => item.id === id && item.role === "character")) fail(`#${id.slice(2)} is not a Trace character.`);
     }
     const recovered = await recover(
       idleSpec({ nft: input.nft, role: input.role, nonce: input.nonce, maxUses: input.maxUses, expiry: input.expiry, excluded }),
@@ -611,22 +611,22 @@ export async function submitComplete(
   });
 }
 
-export async function submitTransfer(
+export async function submitDelegate(
   registry: Registry,
-  input: { nft: string; recipient: string; nonce: number; signature: string },
+  input: { nft: string; to: string; nonce: number; signature: string },
   ms: number,
 ): Promise<Result> {
   return run(async () => {
     const asset = mustAsset(registry, input.nft);
-    const recipient = normAddress(input.recipient);
-    if (recipient === asset.owner) fail("That NFT is already at this address.");
-    const recovered = await recover(transferSpec({ nft: input.nft, recipient, nonce: input.nonce }), input.signature);
-    if (recovered !== asset.owner) fail("Only the current holder can transfer.");
-    bumpNonce(registry, input.nft, "transfer", input.nonce);
-    asset.owner = recipient;
+    const to = normAddress(input.to);
+    if (to === asset.owner) fail("That piece is already delegated to this address.");
+    const recovered = await recover(delegateSpec({ nft: input.nft, to, nonce: input.nonce }), input.signature);
+    if (recovered !== asset.owner) fail("Only the current holder can delegate.");
+    bumpNonce(registry, input.nft, "delegate", input.nonce);
+    asset.owner = to;
     registry.idles = registry.idles.filter((offer) => offer.assetId !== input.nft);
-    log(registry, "Transfer", input.nft, recovered, ms);
-    return { note: "Holder updated. Earlier signatures on this NFT no longer count.", refId: input.nft };
+    log(registry, "Delegate", input.nft, recovered, ms);
+    return { note: `Delegated. ${to.slice(0, 6)}…${to.slice(-4)} now signs for this piece; earlier signatures on it no longer count.`, refId: input.nft };
   });
 }
 

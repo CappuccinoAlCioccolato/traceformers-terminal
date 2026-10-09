@@ -7,3 +7,4 @@ dist/
 /mvp/
 /mvp-integration/
 /brainstorming-*
+tsconfig.tsbuildinfo

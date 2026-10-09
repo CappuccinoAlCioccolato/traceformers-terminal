@@ -1,3 +1,4 @@
+import { isAddress } from "viem";
 import { create } from "zustand";
 import { piece, type Role } from "@/lib/trace/catalog";
 import { answer } from "@/lib/trace/portrait";
@@ -10,7 +11,7 @@ import {
   openSpec,
   respondSpec,
   revokeSpec,
-  transferSpec,
+  delegateSpec,
 } from "@/lib/protocol/domain";
 import { ambient, chooseResponder, createGenesis, npcRespond } from "@/lib/protocol/network";
 import {
@@ -28,7 +29,7 @@ import {
   submitOpen,
   submitRespond,
   submitRevoke,
-  submitTransfer,
+  submitDelegate,
   unix,
 } from "@/lib/protocol/relayer";
 import type { Registry, Result } from "@/lib/protocol/types";
@@ -39,6 +40,8 @@ const REPLY_MS = 2600;
 const CATCH_UP = 48;
 
 export type View = "wall" | "graph" | "pool" | "board";
+/** Where a note belongs: it is shown under the section that produced it. */
+export type Scope = "terminal" | "talk" | "wallet" | "pool-offer" | "pool-delegate" | "footer";
 export type Answerer = "network" | "mine";
 
 type AppState = {
@@ -47,8 +50,7 @@ type AppState = {
   view: View;
   talkId: string | null;
   detailId: string | null;
-  intro: boolean;
-  note: { text: string; tone: "ok" | "error" } | null;
+  note: { text: string; tone: "ok" | "error"; scope: Scope } | null;
   pending: boolean;
   awaiting: string | null;
   answerTarget: string | null;
@@ -61,7 +63,6 @@ export const useApp = create<AppState>(() => ({
   view: "wall",
   talkId: null,
   detailId: null,
-  intro: true,
   note: null,
   pending: false,
   awaiting: null,
@@ -90,17 +91,17 @@ function submit(work: (draft: Registry, ms: number) => Promise<Result> | Result)
   return mutate(async (draft, ms) => work(draft, ms), (out) => out.ok);
 }
 
-function say(result: Result) {
-  useApp.setState({ note: result.ok ? { text: result.note, tone: "ok" } : { text: result.error, tone: "error" } });
+function say(result: Result, scope: Scope) {
+  useApp.setState({ note: result.ok ? { text: result.note, tone: "ok", scope } : { text: result.error, tone: "error", scope } });
   return result;
 }
 
-async function signed(task: () => Promise<Result>): Promise<Result> {
-  useApp.setState({ pending: true });
+async function signed(scope: Scope, task: () => Promise<Result>): Promise<Result> {
+  useApp.setState({ pending: true, note: null });
   try {
-    return say(await task());
+    return say(await task(), scope);
   } catch (err) {
-    return say({ ok: false, error: err instanceof Error ? err.message : "The request failed." });
+    return say({ ok: false, error: err instanceof Error ? err.message : "The request failed." }, scope);
   } finally {
     useApp.setState({ pending: false });
   }
@@ -121,6 +122,9 @@ function load(): Registry | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Registry;
     if (parsed?.version !== 1 || !Array.isArray(parsed.assets) || !Array.isArray(parsed.closures)) return null;
+    // Registries saved by earlier builds: no handles yet, and delegation was logged as a transfer.
+    parsed.handles ??= {};
+    for (const row of parsed.log) if ((row.kind as string) === "Transfer") row.kind = "Delegate";
     return parsed;
   } catch {
     return null;
@@ -164,6 +168,7 @@ async function advance() {
       conversation.status === "closed"
         ? { ok: true, note: `Callback included for ${id}: the relayer drew the missing piece and the talk is closed.` }
         : { ok: false, error: `The draw for ${id} found no eligible idle piece. Offers were not consumed.` },
+      "terminal",
     );
   }
 }
@@ -206,27 +211,23 @@ export async function resetRegistry() {
     },
     () => true,
   );
-  useApp.setState({ talkId: null, detailId: null, note: { text: "Local registry reset to genesis.", tone: "ok" } });
+  useApp.setState({ talkId: null, detailId: null, note: { text: "Local registry reset to genesis.", tone: "ok", scope: "footer" } });
 }
 
 // ---------------------------------------------------------------------------------------------------------
 // UI state.
 
 export function setView(view: View) {
-  useApp.setState({ view });
+  useApp.setState({ view, note: null });
   if (window.location.hash !== `#${view}`) window.history.replaceState(null, "", `#${view}`);
 }
 
+/** Open a talk in the floating window, from any view. */
 export function openTalk(convId: string | null) {
-  useApp.setState((state) => ({ talkId: state.talkId === convId ? null : convId }));
+  useApp.setState({ talkId: convId });
 }
 
-/** Show a conversation from anywhere: switch to the wall and open its talk. */
-export function showConversation(convId: string) {
-  setView("wall");
-  useApp.setState({ talkId: convId });
-  window.requestAnimationFrame(() => document.getElementById("talk")?.scrollIntoView({ behavior: "smooth", block: "start" }));
-}
+export const showConversation = openTalk;
 
 /** Point the terminal at an open conversation to answer it. */
 export function setAnswerTarget(convId: string | null) {
@@ -236,10 +237,6 @@ export function setAnswerTarget(convId: string | null) {
 
 export function selectDetail(id: string | null) {
   useApp.setState({ detailId: id });
-}
-
-export function toggleIntro() {
-  useApp.setState((state) => ({ intro: !state.intro }));
 }
 
 export function setSheet(sheet: boolean) {
@@ -260,7 +257,7 @@ function wallet() {
 }
 
 export function linkWallet() {
-  return signed(async () => {
+  return signed("wallet", async () => {
     const { address, signTyped } = wallet();
     const signature = await signTyped(linkSpec(address!));
     return submit((draft, ms) => submitLink(draft, { address: address!, signature }, ms));
@@ -268,7 +265,7 @@ export function linkWallet() {
 }
 
 export function openConversation(input: { characterId: string; attachedId: string; plaintext: string; seconds: number; answerer: Answerer }) {
-  return signed(async () => {
+  return signed("terminal", async () => {
     const { signTyped } = wallet();
     const registry = registryNow();
     const role = piece(input.attachedId)!.role;
@@ -303,7 +300,7 @@ async function autoAnswer(convId: string, answerer: Answerer) {
       if (!choice) return { ok: false, error: "No network character is free to answer right now. Your opening stays open until its deadline." };
       return npcRespond(draft, conversation, choice.responderId, choice.pieceId, ms);
     });
-    say(result);
+    say(result, "terminal");
   } finally {
     if (useApp.getState().awaiting === convId) useApp.setState({ awaiting: null });
   }
@@ -319,7 +316,7 @@ async function answerWithMine(convId: string) {
     (asset) => asset.owner === address && asset.role === "character" && asset.id !== conversation.characterId && cooling(registry, asset.id, block) === 0,
   );
   if (!other) {
-    say({ ok: false, error: "Your other character is cooling down. The opening stays open for the network." });
+    say({ ok: false, error: "Your other character is cooling down. The opening stays open for the network." }, "terminal");
     return;
   }
   const empty: Role = conversation.baseId ? "encoder" : "base";
@@ -330,7 +327,7 @@ async function answerWithMine(convId: string) {
 }
 
 export function respondTo(input: { convId: string; characterId: string; pieceId: string; plaintext: string }) {
-  return signed(async () => {
+  return signed("terminal", async () => {
     const { signTyped } = wallet();
     const registry = registryNow();
     const conversation = registry.conversations.find((item) => item.id === input.convId);
@@ -350,11 +347,11 @@ export function respondTo(input: { convId: string; characterId: string; pieceId:
 }
 
 export function includeCallback(convId: string) {
-  return signed(async () => submit((draft, ms) => settleDraw(draft, convId, ms, 2000)));
+  return signed("talk", async () => submit((draft, ms) => settleDraw(draft, convId, ms, 2000)));
 }
 
 export function completeConversation(input: { characterId: string; baseId: string; encoderId: string; plaintext: string }) {
-  return signed(async () => {
+  return signed("terminal", async () => {
     const { signTyped } = wallet();
     const registry = registryNow();
     const message = { character: input.characterId, base: input.baseId, encoder: input.encoderId, nonce: nextNonce(registry, input.characterId, "complete") };
@@ -366,7 +363,7 @@ export function completeConversation(input: { characterId: string; baseId: strin
 }
 
 export function offerIdle(input: { assetId: string; maxUses: number; days: number; excluded: string }) {
-  return signed(async () => {
+  return signed("pool-offer", async () => {
     const { signTyped } = wallet();
     const registry = registryNow();
     const message = {
@@ -383,7 +380,7 @@ export function offerIdle(input: { assetId: string; maxUses: number; days: numbe
 }
 
 export function revokeIdle(assetId: string) {
-  return signed(async () => {
+  return signed("pool-offer", async () => {
     const { signTyped } = wallet();
     const message = { nft: assetId, nonce: nextNonce(registryNow(), assetId, "offer") };
     const signature = await signTyped(revokeSpec(message));
@@ -391,17 +388,38 @@ export function revokeIdle(assetId: string) {
   });
 }
 
-export function transferPiece(assetId: string, recipient: string) {
-  return signed(async () => {
-    const { signTyped } = wallet();
-    const message = { nft: assetId, recipient: recipient.trim(), nonce: nextNonce(registryNow(), assetId, "transfer") };
-    const signature = await signTyped(transferSpec(message));
-    return submit((draft, ms) => submitTransfer(draft, { ...message, signature }, ms));
+export function delegatePiece(assetId: string, to: string) {
+  return signed("pool-delegate", async () => {
+    const { signTyped, address } = wallet();
+    const target = to.trim();
+    if (!isAddress(target)) return { ok: false, error: "That is not an Ethereum address: 0x followed by 40 hex characters." };
+    if (target.toLowerCase() === address) return { ok: false, error: "That is your own address: the piece is already yours." };
+    const message = { nft: assetId, to: target, nonce: nextNonce(registryNow(), assetId, "delegate") };
+    const signature = await signTyped(delegateSpec(message));
+    return submit((draft, ms) => submitDelegate(draft, { ...message, signature }, ms));
   });
 }
 
+/** Attach an X username to the connected address, so a shared talk can tag it. */
+export async function setHandle(handle: string) {
+  const value = handle.trim().replace(/^@/, "");
+  if (value && !/^[A-Za-z0-9_]{1,15}$/.test(value)) {
+    return say({ ok: false, error: "An X username has 1 to 15 letters, digits, or underscores." }, "wallet");
+  }
+  const address = useWallet.getState().address;
+  if (!address) return say({ ok: false, error: "Connect a wallet first." }, "wallet");
+  await mutate(
+    async (draft) => {
+      if (value) draft.handles[address] = value;
+      else delete draft.handles[address];
+    },
+    () => true,
+  );
+  return say({ ok: true, note: value ? `Shared talks will tag @${value} for your pieces.` : "X username removed." }, "wallet");
+}
+
 export function openKeyOf(baseId: string) {
-  return signed(async () => {
+  return signed("terminal", async () => {
     const { address } = wallet();
     return submit((draft, ms) => renewKey(draft, baseId, address!, ms));
   });

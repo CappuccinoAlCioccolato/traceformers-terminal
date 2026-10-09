@@ -83,7 +83,7 @@ export type Closure = {
   at: number;
 };
 
-export type LogKind = "IdleOffer" | "Revoke" | "Opened" | "Closed" | "Expired" | "Transfer" | "Linked";
+export type LogKind = "IdleOffer" | "Revoke" | "Opened" | "Closed" | "Expired" | "Delegate" | "Linked";
 
 export type LogRow = {
   id: number;
@@ -110,6 +110,8 @@ export type Registry = {
   keys: KeyWindow[];
   cooldowns: Record<string, number>;
   labels: Record<string, string>;
+  /** X usernames that holders attached to their address, used to tag them when a talk is shared. */
+  handles: Record<string, string>;
   links: string[];
   grants: string[];
   seq: number;

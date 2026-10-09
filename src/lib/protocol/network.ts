@@ -167,6 +167,7 @@ export async function createGenesis(now: number): Promise<Registry> {
     keys: [],
     cooldowns: {},
     labels: {},
+    handles: {},
     links: [],
     grants: [],
     seq: 0,
