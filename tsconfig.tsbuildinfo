@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/main.tsx"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/main.tsx","./src/lib/trace/catalog-data.ts","./src/lib/trace/catalog.ts","./src/lib/trace/cipher.ts","./src/lib/trace/marks.ts","./src/lib/trace/portrait.ts"],"version":"5.9.3"}
