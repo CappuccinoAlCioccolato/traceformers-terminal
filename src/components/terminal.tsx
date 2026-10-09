@@ -8,7 +8,6 @@ import { canRead, tally, walletLabel } from "@/lib/protocol/derive";
 import { MAX_GLYPHS, blockAt, cooling, eligibleIdle, keyLeft, unix, windowFor } from "@/lib/protocol/relayer";
 import type { Conversation, Registry } from "@/lib/protocol/types";
 import {
-  completeConversation,
   linkWallet,
   openConversation,
   openKeyOf,
@@ -29,8 +28,8 @@ type Mode = "open-base" | "open-encoder" | "complete" | "answer";
 const MODES: { id: Mode; label: string; text: string }[] = [
   { id: "open-base", label: "open +base", text: "your character speaks and brings a base. the encoder slot stays empty: whoever answers fills it. until then the line is not encoded." },
   { id: "open-encoder", label: "open +encoder", text: "your character speaks and brings an encoder. the base slot stays empty: whoever answers fills it. until then the line is sealed." },
-  { id: "complete", label: "complete", text: "character, base, and encoder in one signature. it closes at once, 1 point each. a piece you do not hold must be idle in the pool." },
-  { id: "answer", label: "answer", text: "reply to an opening with your character and fill its empty slot: your piece, an idle one, or a draw from the pool." },
+  { id: "complete", label: "complete", text: "your character speaks and brings both a base and an encoder. another character answers with itself only: 1 point to each of the four pieces." },
+  { id: "answer", label: "answer", text: "reply to an opening with your character. if a slot is empty, fill it: your piece, an idle one, or a draw from the pool." },
 ];
 
 const FORM_ORDER = ["classic", "inverted", "blink"];
@@ -53,8 +52,8 @@ function ownChoices(registry: Registry, wallet: string, role: Role): Choice[] {
     .map((asset) => ({ id: asset.id, own: true, label: "mine" }));
 }
 
-function idleChoices(registry: Registry, role: Role, wallet: string, banned: string[], characters: string[], ms: number): Choice[] {
-  return eligibleIdle(registry, role, banned, characters, ms)
+function idleChoices(registry: Registry, role: Role, wallet: string, banned: string[], takerId: string, ms: number): Choice[] {
+  return eligibleIdle(registry, role, banned, takerId, ms)
     .filter((offer) => offer.owner !== wallet)
     .map((offer) => ({ id: offer.assetId, own: false, label: `idle · ${walletLabel(registry, offer.owner)}` }));
 }
@@ -66,16 +65,14 @@ function plan(role: Role, mode: Mode, registry: Registry, wallet: string, charac
     if (role === brought) return { kind: "pick", choices: own, note: "you bring it" };
     return { kind: "empty", note: `empty slot · whoever answers brings the ${role}` };
   }
-  if (mode === "complete") {
-    return { kind: "pick", choices: [...own, ...idleChoices(registry, role, wallet, [], [characterId], ms)], note: "yours, or an idle one" };
-  }
+  if (mode === "complete") return { kind: "pick", choices: own, note: "you bring it" };
   if (!target) return { kind: "empty", note: "pick an opening above" };
   const filled = role === "base" ? target.baseId : target.encoderId;
   if (filled) return { kind: "fixed", id: filled, note: `brought by ${padId(piece(target.characterId)?.tokenId ?? 0)}` };
   const banned = [target.characterId, target.baseId ?? "", target.encoderId ?? ""];
   return {
     kind: "pick",
-    choices: [{ id: "", own: false, label: "the relayer draws from the idle pool" }, ...own, ...idleChoices(registry, role, wallet, banned, [target.characterId, characterId], ms)],
+    choices: [{ id: "", own: false, label: "the relayer draws from the idle pool" }, ...own, ...idleChoices(registry, role, wallet, banned, characterId, ms)],
     note: "you fill the empty slot",
   };
 }
@@ -173,8 +170,11 @@ export function Terminal() {
   const baseId = chosen("base");
   const encoderId = chosen("encoder");
   const dialect = encoderId ? (piece(encoderId)?.dialect ?? null) : null;
-  const attached = mode === "open-base" ? baseId : mode === "open-encoder" ? encoderId : null;
-  const attachedCool = attached ? cooling(registry, attached, block) : 0;
+  const attachedIds = (mode === "open-base" ? [baseId] : mode === "open-encoder" ? [encoderId] : mode === "complete" ? [baseId, encoderId] : []).filter(
+    (id): id is string => Boolean(id),
+  );
+  const coolingPiece = attachedIds.find((id) => cooling(registry, id, block) > 0) ?? null;
+  const attachedCool = coolingPiece ? cooling(registry, coolingPiece, block) : 0;
 
   const ready =
     !pending &&
@@ -182,16 +182,14 @@ export function Terminal() {
     draft.length > 0 &&
     mouthCool === 0 &&
     attachedCool === 0 &&
-    (mode === "open-base" || mode === "open-encoder" ? Boolean(attached) : mode === "complete" ? Boolean(baseId && encoderId) : Boolean(target));
+    (mode === "answer" ? Boolean(target) : attachedIds.length === (mode === "complete" ? 2 : 1));
 
   async function send() {
     let result;
-    if (mode === "open-base" || mode === "open-encoder") {
-      result = await openConversation({ characterId, attachedId: attached!, plaintext: draft, seconds, answerer });
-    } else if (mode === "complete") {
-      result = await completeConversation({ characterId, baseId: baseId!, encoderId: encoderId!, plaintext: draft });
+    if (mode !== "answer") {
+      result = await openConversation({ characterId, attachedIds, plaintext: draft, seconds, answerer });
     } else if (target) {
-      const filling = target.baseId ? encoderId : baseId;
+      const filling = target.baseId && target.encoderId ? "" : target.baseId ? encoderId : baseId;
       result = await respondTo({ convId: target.id, characterId, pieceId: filling ?? "", plaintext: draft });
       if (result.ok) setAnswerTarget(null);
     }
@@ -321,7 +319,7 @@ export function Terminal() {
                     <span className="pick">{on ? ">" : " "}</span>
                     <Tok id={item.characterId} mine={registry.assets.some((asset) => asset.id === item.characterId && asset.owner === wallet)} />
                     <span className="text-dim truncate">
-                      brings <PieceMark id={item.baseId ?? item.encoderId} /> · needs {item.baseId ? "encoder" : "base"}
+                      {item.baseId && item.encoderId ? "complete · needs only a character" : <>brings <PieceMark id={item.baseId ?? item.encoderId} /> · needs {item.baseId ? "encoder" : "base"}</>}
                     </span>
                     <span className="text-cyan">{formatLeft(item.deadline, unix(now))}</span>
                   </button>
@@ -338,7 +336,7 @@ export function Terminal() {
       {section("base")}
       {section("encoder")}
 
-      {mode === "open-base" || mode === "open-encoder" ? (
+      {mode !== "answer" ? (
         <div className="mode-box">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-dim">waits up to</span>
@@ -407,7 +405,7 @@ export function Terminal() {
           {busy ? "signing…" : "sign + send"}
         </button>
         {mouthCool > 0 ? <span className="text-accent">{padId(speaker?.tokenId ?? 0)} cools down {mouthCool}</span> : null}
-        {attachedCool > 0 ? <span className="text-accent">{padId(piece(attached!)?.tokenId ?? 0)} cools down {attachedCool}</span> : null}
+        {coolingPiece ? <span className="text-accent">{padId(piece(coolingPiece)?.tokenId ?? 0)} cools down {attachedCool}</span> : null}
         {awaiting ? <span className="text-cyan">{answerer === "mine" && other ? `${padId(other.tokenId)} answers…` : "the network answers…"}</span> : null}
       </div>
       <Note scope="terminal" />

@@ -17,7 +17,8 @@ export type IdleOffer = {
   maxUses: number;
   uses: number;
   expiry: number;
-  excluded: string;
+  /** Characters allowed to use the piece, comma-separated registry ids. Empty: any character. */
+  allowed: string;
   signature: Hex;
   owner: string;
 };

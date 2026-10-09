@@ -16,9 +16,16 @@ export const LINK_STATEMENT = "Hold Trace pieces in Traceformers Terminal. No fe
 export const MAX_OPEN_SECONDS = 7200;
 export const MIN_OPEN_SECONDS = 120;
 
+/**
+ * targeted: the opener brought one piece and another holder answered with the other.
+ * complete: the opener brought both pieces; another holder answered with a character only.
+ * self: the answering character is held by the opener's own wallet. One holder talking to itself
+ * never earns more than a complete talk would give it.
+ */
 export const POINTS = {
   targeted: { initiator: 3, responder: 3, base: 1, encoder: 1 },
-  complete: { initiator: 1, responder: 0, base: 1, encoder: 1 },
+  complete: { initiator: 1, responder: 1, base: 1, encoder: 1 },
+  self: { initiator: 1, responder: 0, base: 1, encoder: 1 },
 } as const;
 
 export const linkTypes = {
@@ -35,7 +42,7 @@ export const idleTypes = {
     { name: "nonce", type: "uint256" },
     { name: "maxUses", type: "uint256" },
     { name: "expiry", type: "uint256" },
-    { name: "excluded", type: "string" },
+    { name: "allowed", type: "string" },
   ],
 } as const;
 
@@ -67,16 +74,6 @@ export const respondTypes = {
   ],
 } as const;
 
-export const completeTypes = {
-  Complete: [
-    { name: "character", type: "string" },
-    { name: "base", type: "string" },
-    { name: "encoder", type: "string" },
-    { name: "line", type: "bytes32" },
-    { name: "nonce", type: "uint256" },
-  ],
-} as const;
-
 /** Hands the signing rights of a piece to another address inside this registry. Not a sale, not an Ethereum transfer. */
 export const delegateTypes = {
   Delegate: [
@@ -97,7 +94,7 @@ export function lineCommit(plaintext: string): Hex {
   return keccak256(stringToHex(`traceformers:${plaintext}`));
 }
 
-export function canonicalExcluded(ids: string[]): string {
+export function canonicalIds(ids: string[]): string {
   return [...new Set(ids.map((id) => id.trim()).filter(Boolean))].sort().join(",");
 }
 
@@ -113,7 +110,7 @@ export const linkSpec = (wallet: string): TypedSpec => ({
   message: { wallet: getAddress(wallet), statement: LINK_STATEMENT },
 });
 
-export const idleSpec = (m: { nft: string; role: string; nonce: number; maxUses: number; expiry: number; excluded: string }): TypedSpec => ({
+export const idleSpec = (m: { nft: string; role: string; nonce: number; maxUses: number; expiry: number; allowed: string }): TypedSpec => ({
   types: idleTypes,
   primaryType: "IdleOffer",
   message: { ...m, nonce: BigInt(m.nonce), maxUses: BigInt(m.maxUses), expiry: BigInt(m.expiry) },
@@ -135,12 +132,6 @@ export const respondSpec = (m: { openId: string; character: string; base: string
   types: respondTypes,
   primaryType: "Respond",
   message: m,
-});
-
-export const completeSpec = (m: { character: string; base: string; encoder: string; line: Hex; nonce: number }): TypedSpec => ({
-  types: completeTypes,
-  primaryType: "Complete",
-  message: { ...m, nonce: BigInt(m.nonce) },
 });
 
 export const delegateSpec = (m: { nft: string; to: string; nonce: number }): TypedSpec => ({

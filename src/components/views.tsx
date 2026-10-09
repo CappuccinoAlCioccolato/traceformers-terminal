@@ -233,7 +233,7 @@ function Pool() {
   const [assetId, setAssetId] = useState("");
   const [cap, setCap] = useState("");
   const [days, setDays] = useState("");
-  const [excluded, setExcluded] = useState("");
+  const [allowed, setAllowed] = useState("");
   const [giveId, setGiveId] = useState("");
   const [giveTo, setGiveTo] = useState("");
   const chosen = mine.find((asset) => asset.id === assetId) ?? mine[0];
@@ -257,7 +257,7 @@ function Pool() {
                 <Tok id={offer.assetId} mine={offer.owner === wallet} />
                 <span className="text-dim truncate">
                   {offer.role} · {offer.maxUses ? `${offer.uses}/${offer.maxUses} uses` : "until revoked"}
-                  {offer.excluded ? ` · not for ${offer.excluded.split(",").map((id) => padId(piece(id)?.tokenId ?? 0)).join(" ")}` : ""}
+                  {offer.allowed ? ` · only for ${offer.allowed.split(",").map((id) => padId(piece(id)?.tokenId ?? 0)).join(" ")}` : " · any character"}
                   {offer.expiry ? (expired ? " · expired" : ` · until ${new Date(offer.expiry * 1000).toISOString().slice(0, 10)}`) : ""}
                 </span>
                 <span className={offer.owner === wallet ? "text-you" : "text-dim"}>{offer.owner === wallet ? "you" : walletLabel(registry, offer.owner)}</span>
@@ -291,8 +291,8 @@ function Pool() {
               <input value={days} inputMode="decimal" onChange={(event) => setDays(event.target.value.replace(/[^\d.]/g, ""))} />
             </label>
             <label className="field sm:col-span-2">
-              <span>characters that may not use it · their # separated by commas, empty = anyone</span>
-              <input value={excluded} spellCheck={false} inputMode="numeric" onChange={(event) => setExcluded(event.target.value.replace(/[^\d,# ]/g, ""))} placeholder="#2, #14" />
+              <span>only these characters may use it · their # separated by commas · empty = any character</span>
+              <input value={allowed} spellCheck={false} inputMode="numeric" onChange={(event) => setAllowed(event.target.value.replace(/[^\d,# ]/g, ""))} placeholder="any character" />
             </label>
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
@@ -300,7 +300,7 @@ function Pool() {
               type="button"
               className="act is-ready"
               disabled={pending}
-              onClick={() => void offerIdle({ assetId: chosen.id, maxUses: cap ? Number(cap) : 0, days: days ? Number(days) : 0, excluded: toCharacterIds(excluded) })}
+              onClick={() => void offerIdle({ assetId: chosen.id, maxUses: cap ? Number(cap) : 0, days: days ? Number(days) : 0, allowed: toCharacterIds(allowed) })}
             >
               sign the offer
             </button>
@@ -428,7 +428,7 @@ function Board() {
   );
 }
 
-/** "#2, 14" becomes "c-14,c-2": the registry ids of the characters an offer bars. */
+/** "#2, 14" becomes "c-14,c-2": the registry ids of the characters an offer is reserved for. */
 function toCharacterIds(text: string): string {
   return text
     .split(",")

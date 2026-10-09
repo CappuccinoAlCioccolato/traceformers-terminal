@@ -10,8 +10,8 @@ const GUIDE: Record<View, { title: string; rows: [string, string][] }> = {
       ["encoder", "hides the line in its dialect: binary, base64, or punched card."],
       ["base", "holds the key. while it is open (12 blocks, blink 1) the holders of that talk read the plaintext here."],
       ["open", "your character speaks and brings a base or an encoder. whoever answers brings the other one."],
-      ["answer", "another character replies, cites your #, and fills the empty slot: its own piece, an idle one, or a draw."],
-      ["complete", "character, base, and encoder in one signature. it closes at once, 1 point each."],
+      ["answer", "another character always replies, cites your #, and fills the empty slot: its own piece, an idle one, or a draw. both lines share the same base and encoder."],
+      ["complete", "your character brings both a base and an encoder; another character answers with itself only. 1 point each."],
       ["wall", "everyone sees only the ciphertext. click a line to open its talk."],
       ["fee", "none. you sign EIP-712 messages; the relayer includes them."],
     ],
@@ -31,7 +31,7 @@ const GUIDE: Record<View, { title: string; rows: [string, string][] }> = {
     rows: [
       ["idle", "one signature lets other holders use your base or encoder in their talks, without asking you each time."],
       ["limits", "it stands until you revoke it, or until its max uses or expiry run out."],
-      ["blocked", "you can name characters that may not use the piece."],
+      ["reserved", "you can reserve the piece for some characters only. left empty, any character may use it."],
       ["draw", "when an answer leaves the slot to chance, the relayer draws an eligible idle piece."],
       ["delegate", "hand the signing rights of a piece to another address in this registry. not a sale, not an Ethereum transfer."],
     ],
@@ -39,9 +39,9 @@ const GUIDE: Record<View, { title: string; rows: [string, string][] }> = {
   board: {
     title: "how points work",
     rows: [
-      ["targeted", "a talk that closes: opening character 3, answering character 3, base 1, encoder 1."],
-      ["complete", "one holder, one signature: 1 point to each piece."],
-      ["expired", "an opening nobody answered in time: 0 for everyone."],
+      ["targeted", "the opener brings one piece, another holder answers with the other: opening character 3, answering character 3, base 1, encoder 1."],
+      ["complete", "the opener brings both pieces, another holder answers: 1 point to each of the four pieces."],
+      ["self", "if your own other character answers, the answer earns 0 and the talk scores 1 / 0 / 1 / 1."],
       ["nft", "points stay on the NFT. by wallet sums what an address holds now."],
       ["you", "your rows are red. click any row to see the talks behind it."],
     ],

@@ -7,8 +7,7 @@ import {
   MAX_OPEN_SECONDS,
   MIN_OPEN_SECONDS,
   POINTS,
-  canonicalExcluded,
-  completeSpec,
+  canonicalIds,
   idleSpec,
   lineCommit,
   linkSpec,
@@ -162,7 +161,7 @@ function addLine(
   return id;
 }
 
-async function consumeIdle(registry: Registry, assetId: string, role: Role, characterIds: string[], ms: number) {
+async function consumeIdle(registry: Registry, assetId: string, role: Role, takerId: string, ms: number) {
   const offer = registry.idles.find((item) => item.assetId === assetId);
   if (!offer) fail("That piece is not in the idle pool.");
   if (offer.role !== role) fail("The idle offer role does not match the slot.");
@@ -170,10 +169,10 @@ async function consumeIdle(registry: Registry, assetId: string, role: Role, char
   if (asset.owner !== offer.owner) fail("The idle offer no longer belongs to the current holder.");
   if (offer.expiry !== 0 && offer.expiry <= unix(ms)) fail("Idle offer expired.");
   if (offer.maxUses !== 0 && offer.uses >= offer.maxUses) fail("Idle offer has no uses left.");
-  const banned = offer.excluded ? offer.excluded.split(",") : [];
-  if (characterIds.some((id) => banned.includes(id))) fail("A character in this conversation is excluded from the idle offer.");
+  const allowed = offer.allowed ? offer.allowed.split(",") : [];
+  if (allowed.length && !allowed.includes(takerId)) fail("This idle piece is reserved for other characters.");
   const recovered = await recover(
-    idleSpec({ nft: assetId, role: offer.role, nonce: offer.nonce, maxUses: offer.maxUses, expiry: offer.expiry, excluded: offer.excluded }),
+    idleSpec({ nft: assetId, role: offer.role, nonce: offer.nonce, maxUses: offer.maxUses, expiry: offer.expiry, allowed: offer.allowed }),
     offer.signature,
   );
   if (recovered !== asset.owner) fail("The idle signature is no longer valid.");
@@ -183,15 +182,16 @@ async function consumeIdle(registry: Registry, assetId: string, role: Role, char
   }
 }
 
-async function authorizePiece(registry: Registry, assetId: string, role: Role, signer: string, characterIds: string[], ms: number) {
+async function authorizePiece(registry: Registry, assetId: string, role: Role, signer: string, takerId: string, ms: number) {
   const asset = mustAsset(registry, assetId);
   if (asset.role !== role) fail(`The ${role} slot needs an NFT of that role.`);
   if (asset.owner === signer) return asset;
-  await consumeIdle(registry, assetId, role, characterIds, ms);
+  await consumeIdle(registry, assetId, role, takerId, ms);
   return asset;
 }
 
-export function eligibleIdle(registry: Registry, role: Role, banned: string[], characterIds: string[], ms: number): IdleOffer[] {
+/** Idle offers of a role that the taking character may use now, minus pieces already in the talk. */
+export function eligibleIdle(registry: Registry, role: Role, banned: string[], takerId: string, ms: number): IdleOffer[] {
   return registry.idles
     .filter((offer) => {
       if (offer.role !== role || banned.includes(offer.assetId)) return false;
@@ -199,8 +199,8 @@ export function eligibleIdle(registry: Registry, role: Role, banned: string[], c
       if (!asset || asset.owner !== offer.owner) return false;
       if (offer.maxUses !== 0 && offer.uses >= offer.maxUses) return false;
       if (offer.expiry !== 0 && offer.expiry <= unix(ms)) return false;
-      const excluded = offer.excluded ? offer.excluded.split(",") : [];
-      return !characterIds.some((id) => excluded.includes(id));
+      const allowed = offer.allowed ? offer.allowed.split(",") : [];
+      return allowed.length === 0 || allowed.includes(takerId);
     })
     .sort((a, b) => a.assetId.localeCompare(b.assetId));
 }
@@ -220,7 +220,8 @@ function writeClosure(
   const { conversation } = input;
   const block = blockAt(registry, input.ms);
   const initiator = mustAsset(registry, conversation.characterId);
-  const points = POINTS[conversation.kind];
+  const self = Boolean(input.responder && input.responder.owner === initiator.owner);
+  const points = self ? POINTS.self : POINTS[conversation.kind];
   registry.seq += 1;
   const id = `k-${block}-${registry.seq}`;
   registry.closures.push({
@@ -318,6 +319,7 @@ export async function settleDraw(registry: Registry, convId: string, ms: number,
     if (ms - pending.requestedAt < minMs) fail("The relayer callback is not ready yet.");
     await assertOpeningFresh(registry, conversation);
     const empty: Role = conversation.baseId ? "encoder" : "base";
+    if (conversation.baseId && conversation.encoderId) fail("Both slots are filled: nothing to draw.");
     const responder = mustAsset(registry, pending.responderId);
     if (responder.owner !== pending.address) {
       conversation.draw = null;
@@ -327,7 +329,7 @@ export async function settleDraw(registry: Registry, convId: string, ms: number,
       registry,
       empty,
       [conversation.characterId, conversation.baseId, conversation.encoderId, responder.id].filter((id): id is string => Boolean(id)),
-      [conversation.characterId, responder.id],
+      responder.id,
       ms,
     );
     if (!pool.length) {
@@ -336,7 +338,7 @@ export async function settleDraw(registry: Registry, convId: string, ms: number,
     }
     const seed = keccak256(stringToHex(`${convId}:${pending.signature}:${blockAt(registry, ms)}`));
     const chosen = pool[Number(BigInt(seed) % BigInt(pool.length))]!;
-    await consumeIdle(registry, chosen.assetId, empty, [conversation.characterId, responder.id], ms);
+    await consumeIdle(registry, chosen.assetId, empty, responder.id, ms);
     const drawn = mustAsset(registry, chosen.assetId);
     const base = empty === "base" ? drawn : mustAsset(registry, conversation.baseId!);
     const encoder = empty === "encoder" ? drawn : mustAsset(registry, conversation.encoderId!);
@@ -404,7 +406,7 @@ export async function submitLink(registry: Registry, input: { address: string; s
 
 export async function submitIdle(
   registry: Registry,
-  input: { nft: string; role: string; nonce: number; maxUses: number; expiry: number; excluded: string; signature: string },
+  input: { nft: string; role: string; nonce: number; maxUses: number; expiry: number; allowed: string; signature: string },
   ms: number,
 ): Promise<Result> {
   return run(async () => {
@@ -413,13 +415,13 @@ export async function submitIdle(
     if (asset.role !== input.role) fail("The signed role does not match the NFT.");
     if (!Number.isInteger(input.maxUses) || input.maxUses < 0) fail("Max uses must be a whole number.");
     if (input.expiry !== 0 && input.expiry <= unix(ms)) fail("That expiry is already in the past.");
-    const excluded = canonicalExcluded(input.excluded.split(","));
-    if (excluded !== input.excluded) fail("Excluded ids must be sorted and unique.");
-    for (const id of excluded ? excluded.split(",") : []) {
+    const allowed = canonicalIds(input.allowed.split(","));
+    if (allowed !== input.allowed) fail("Allowed ids must be sorted and unique.");
+    for (const id of allowed ? allowed.split(",") : []) {
       if (!registry.assets.some((item) => item.id === id && item.role === "character")) fail(`#${id.slice(2)} is not a Trace character.`);
     }
     const recovered = await recover(
-      idleSpec({ nft: input.nft, role: input.role, nonce: input.nonce, maxUses: input.maxUses, expiry: input.expiry, excluded }),
+      idleSpec({ nft: input.nft, role: input.role, nonce: input.nonce, maxUses: input.maxUses, expiry: input.expiry, allowed }),
       input.signature,
     );
     if (recovered !== asset.owner) fail("Only the current holder can idle this NFT.");
@@ -432,7 +434,7 @@ export async function submitIdle(
       maxUses: input.maxUses,
       uses: 0,
       expiry: input.expiry,
-      excluded,
+      allowed,
       signature: input.signature as Hex,
       owner: asset.owner,
     });
@@ -461,9 +463,8 @@ export async function submitOpen(
 ): Promise<Result> {
   return run(async () => {
     const block = blockAt(registry, ms);
-    if (Boolean(input.base) === Boolean(input.encoder)) {
-      fail("An opening leaves exactly one slot empty. To bring both pieces, use a complete offer.");
-    }
+    if (!input.base && !input.encoder) fail("An opening brings a base, an encoder, or both.");
+    const kind = input.base && input.encoder ? "complete" : "targeted";
     const now = unix(ms);
     const slack = 90;
     if (input.deadline < now + MIN_OPEN_SECONDS - slack || input.deadline > now + MAX_OPEN_SECONDS + slack) {
@@ -471,24 +472,25 @@ export async function submitOpen(
     }
     const character = mustAsset(registry, input.character);
     if (character.role !== "character") fail("Only a character can open.");
-    const attached = mustAsset(registry, input.base || input.encoder);
-    if (attached.role !== (input.base ? "base" : "encoder")) fail("The attached piece has the wrong role.");
+    const attached = [input.base, input.encoder].filter(Boolean).map((id) => mustAsset(registry, id));
+    if (input.base && mustAsset(registry, input.base).role !== "base") fail("The base slot needs a base.");
+    if (input.encoder && mustAsset(registry, input.encoder).role !== "encoder") fail("The encoder slot needs an encoder.");
     distinct([input.character, input.base, input.encoder]);
     lineCheck(input.plaintext, character);
     assertCool(registry, character.id, block);
-    assertCool(registry, attached.id, block);
+    for (const item of attached) assertCool(registry, item.id, block);
     const commit = lineCommit(input.plaintext);
     const recovered = await recover(
       openSpec({ character: input.character, base: input.base, encoder: input.encoder, line: commit, deadline: input.deadline, nonce: input.nonce }),
       input.signature,
     );
-    if (recovered !== character.owner || recovered !== attached.owner) fail("The character and the attached piece must belong to the signer.");
+    if (recovered !== character.owner || attached.some((item) => item.owner !== recovered)) fail("The character and the pieces it brings must belong to the signer.");
     bumpNonce(registry, input.character, "open", input.nonce);
     registry.seq += 1;
     const id = `op-${block}-${registry.seq}`;
     const conversation: Conversation = {
       id,
-      kind: "targeted",
+      kind,
       characterId: input.character,
       baseId: input.base || null,
       encoderId: input.encoder || null,
@@ -506,10 +508,19 @@ export async function submitOpen(
     addLine(registry, { convId: id, speakerId: character.id, replyTo: null, plaintext: input.plaintext, block });
     cipherLines(registry, conversation);
     if (input.base) openKey(registry, input.base, block);
-    cool(registry, [character.id, attached.id], block);
+    cool(registry, [character.id, ...attached.map((item) => item.id)], block);
     log(registry, "Opened", id, recovered, ms);
-    return { note: `Opening included. It waits for ${input.base ? "an encoder" : "a base"} and another character.`, refId: id };
+    const waits = kind === "complete" ? "another character" : `${input.base ? "an encoder" : "a base"} and another character`;
+    return { note: `Opening included. It waits for ${waits}.`, refId: id };
   });
+}
+
+function closedNote(registry: Registry, conversation: Conversation): string {
+  const closure = registry.closures.find((item) => item.id === conversation.closureId);
+  if (!closure) return "Conversation closed.";
+  const split = `${closure.pointsInitiator} / ${closure.pointsResponder} / ${closure.pointsBase} / ${closure.pointsEncoder}`;
+  const self = closure.responderWallet === closure.initiatorWallet ? " The same wallet answered itself, so the answer earns nothing." : "";
+  return `Conversation closed: ${split} points sit on the NFTs.${self}`;
 }
 
 function lineCheck(plaintext: string, speaker: Asset) {
@@ -532,8 +543,8 @@ export async function submitRespond(
     if (conversation.draw) fail("A draw is already waiting on this opening.");
     if (conversation.baseId && input.base) fail("The base slot is already filled.");
     if (conversation.encoderId && input.encoder) fail("The encoder slot is already filled.");
-    const empty: Role = conversation.baseId ? "encoder" : "base";
-    const supplied = empty === "base" ? input.base : input.encoder;
+    const empty: Role | null = conversation.baseId && conversation.encoderId ? null : conversation.baseId ? "encoder" : "base";
+    const supplied = empty === "base" ? input.base : empty === "encoder" ? input.encoder : "";
     const responder = mustAsset(registry, input.character);
     if (responder.role !== "character") fail("Only a character can respond.");
     if (responder.id === conversation.characterId) fail("The same character cannot answer itself.");
@@ -548,66 +559,25 @@ export async function submitRespond(
     const opening = registry.lines.find((line) => line.convId === conversation.id && !line.replyTo);
     addLine(registry, { convId: conversation.id, speakerId: responder.id, replyTo: opening?.id ?? null, plaintext: input.plaintext, block });
     cool(registry, [responder.id], block);
+    if (!empty) {
+      const base = mustAsset(registry, conversation.baseId!);
+      const encoder = mustAsset(registry, conversation.encoderId!);
+      distinct([conversation.characterId, responder.id, base.id, encoder.id]);
+      writeClosure(registry, { conversation, responder, base, encoder, drawSeed: null, by: recovered, ms });
+      return { note: closedNote(registry, conversation), refId: conversation.id };
+    }
     if (!supplied) {
       conversation.draw = { responderId: responder.id, address: recovered, signature: input.signature as Hex, requestedAt: ms };
       conversation.responderId = responder.id;
       return { note: "Response included. The relayer draws the missing piece from the idle pool: wait for the callback.", refId: conversation.id };
     }
-    const chosen = await authorizePiece(registry, supplied, empty, recovered, [conversation.characterId, responder.id], ms);
+    const chosen = await authorizePiece(registry, supplied, empty, recovered, responder.id, ms);
     const base = empty === "base" ? chosen : mustAsset(registry, conversation.baseId!);
     const encoder = empty === "encoder" ? chosen : mustAsset(registry, conversation.encoderId!);
     distinct([conversation.characterId, responder.id, base.id, encoder.id]);
     writeClosure(registry, { conversation, responder, base, encoder, drawSeed: null, by: recovered, ms });
     cool(registry, [chosen.id], block);
-    return { note: "Conversation closed. 3 / 3 / 1 / 1 points sit on the NFTs.", refId: conversation.id };
-  });
-}
-
-export async function submitComplete(
-  registry: Registry,
-  input: { character: string; base: string; encoder: string; plaintext: string; nonce: number; signature: string },
-  ms: number,
-): Promise<Result> {
-  return run(async () => {
-    const block = blockAt(registry, ms);
-    distinct([input.character, input.base, input.encoder]);
-    const character = mustAsset(registry, input.character);
-    if (character.role !== "character") fail("A complete offer starts from a character.");
-    lineCheck(input.plaintext, character);
-    assertCool(registry, character.id, block);
-    const commit = lineCommit(input.plaintext);
-    const recovered = await recover(
-      completeSpec({ character: input.character, base: input.base, encoder: input.encoder, line: commit, nonce: input.nonce }),
-      input.signature,
-    );
-    if (recovered !== character.owner) fail("The character does not belong to the signer.");
-    const base = await authorizePiece(registry, input.base, "base", recovered, [input.character], ms);
-    const encoder = await authorizePiece(registry, input.encoder, "encoder", recovered, [input.character], ms);
-    bumpNonce(registry, input.character, "complete", input.nonce);
-    registry.seq += 1;
-    const id = `cp-${block}-${registry.seq}`;
-    const conversation: Conversation = {
-      id,
-      kind: "complete",
-      characterId: character.id,
-      baseId: base.id,
-      encoderId: encoder.id,
-      responderId: null,
-      deadline: unix(ms),
-      nonce: input.nonce,
-      signature: input.signature as Hex,
-      opener: recovered,
-      status: "open",
-      openedBlock: block,
-      closureId: null,
-      draw: null,
-    };
-    registry.conversations.push(conversation);
-    addLine(registry, { convId: id, speakerId: character.id, replyTo: null, plaintext: input.plaintext, block });
-    log(registry, "Opened", id, recovered, ms);
-    writeClosure(registry, { conversation, responder: null, base, encoder, drawSeed: null, by: recovered, ms });
-    cool(registry, [character.id, encoder.id], block);
-    return { note: "Complete offer closed. Reduced weight: 1 point per piece.", refId: id };
+    return { note: closedNote(registry, conversation), refId: conversation.id };
   });
 }
 

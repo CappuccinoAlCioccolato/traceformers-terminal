@@ -3,8 +3,7 @@ import { create } from "zustand";
 import { piece, type Role } from "@/lib/trace/catalog";
 import { answer } from "@/lib/trace/portrait";
 import {
-  canonicalExcluded,
-  completeSpec,
+  canonicalIds,
   idleSpec,
   lineCommit,
   linkSpec,
@@ -23,7 +22,6 @@ import {
   nextNonce,
   renewKey,
   settleDraw,
-  submitComplete,
   submitIdle,
   submitLink,
   submitOpen,
@@ -35,7 +33,8 @@ import {
 import type { Registry, Result } from "@/lib/protocol/types";
 import { useWallet } from "@/lib/wallet/store";
 
-const STORE_KEY = "traceformers-terminal.registry.v1";
+// v2: every talk gets an answer and idle offers carry an allowlist; older registries restart from genesis.
+const STORE_KEY = "traceformers-terminal.registry.v2";
 const REPLY_MS = 2600;
 const CATCH_UP = 48;
 
@@ -264,15 +263,15 @@ export function linkWallet() {
   });
 }
 
-export function openConversation(input: { characterId: string; attachedId: string; plaintext: string; seconds: number; answerer: Answerer }) {
+/** Open a talk bringing one piece (targeted) or both a base and an encoder (complete). */
+export function openConversation(input: { characterId: string; attachedIds: string[]; plaintext: string; seconds: number; answerer: Answerer }) {
   return signed("terminal", async () => {
     const { signTyped } = wallet();
     const registry = registryNow();
-    const role = piece(input.attachedId)!.role;
     const message = {
       character: input.characterId,
-      base: role === "base" ? input.attachedId : "",
-      encoder: role === "encoder" ? input.attachedId : "",
+      base: input.attachedIds.find((id) => piece(id)?.role === "base") ?? "",
+      encoder: input.attachedIds.find((id) => piece(id)?.role === "encoder") ?? "",
       deadline: unix(Date.now()) + input.seconds,
       nonce: nextNonce(registry, input.characterId, "open"),
     };
@@ -319,8 +318,8 @@ async function answerWithMine(convId: string) {
     say({ ok: false, error: "Your other character is cooling down. The opening stays open for the network." }, "terminal");
     return;
   }
-  const empty: Role = conversation.baseId ? "encoder" : "base";
-  const own = registry.assets.find((asset) => asset.owner === address && asset.role === empty && cooling(registry, asset.id, block) === 0);
+  const empty: Role | null = conversation.baseId && conversation.encoderId ? null : conversation.baseId ? "encoder" : "base";
+  const own = empty ? registry.assets.find((asset) => asset.owner === address && asset.role === empty && cooling(registry, asset.id, block) === 0) : undefined;
   const opening = registry.lines.find((line) => line.convId === convId && !line.replyTo);
   const plaintext = answer(opening?.plaintext ?? "█", other.tokenId).slice(0, 6);
   await respondTo({ convId, characterId: other.id, pieceId: own?.id ?? "", plaintext });
@@ -332,7 +331,7 @@ export function respondTo(input: { convId: string; characterId: string; pieceId:
     const registry = registryNow();
     const conversation = registry.conversations.find((item) => item.id === input.convId);
     if (!conversation) return { ok: false, error: "Unknown opening." };
-    const empty: Role = conversation.baseId ? "encoder" : "base";
+    const empty: Role | null = conversation.baseId && conversation.encoderId ? null : conversation.baseId ? "encoder" : "base";
     const message = {
       openId: input.convId,
       character: input.characterId,
@@ -350,19 +349,7 @@ export function includeCallback(convId: string) {
   return signed("talk", async () => submit((draft, ms) => settleDraw(draft, convId, ms, 2000)));
 }
 
-export function completeConversation(input: { characterId: string; baseId: string; encoderId: string; plaintext: string }) {
-  return signed("terminal", async () => {
-    const { signTyped } = wallet();
-    const registry = registryNow();
-    const message = { character: input.characterId, base: input.baseId, encoder: input.encoderId, nonce: nextNonce(registry, input.characterId, "complete") };
-    const signature = await signTyped(completeSpec({ ...message, line: lineCommit(input.plaintext) }));
-    const result = await submit((draft, ms) => submitComplete(draft, { ...message, plaintext: input.plaintext, signature }, ms));
-    if (result.ok && result.refId) useApp.setState({ talkId: result.refId });
-    return result;
-  });
-}
-
-export function offerIdle(input: { assetId: string; maxUses: number; days: number; excluded: string }) {
+export function offerIdle(input: { assetId: string; maxUses: number; days: number; allowed: string }) {
   return signed("pool-offer", async () => {
     const { signTyped } = wallet();
     const registry = registryNow();
@@ -372,7 +359,7 @@ export function offerIdle(input: { assetId: string; maxUses: number; days: numbe
       nonce: nextNonce(registry, input.assetId, "offer"),
       maxUses: input.maxUses,
       expiry: input.days > 0 ? unix(Date.now()) + Math.round(input.days * 86400) : 0,
-      excluded: canonicalExcluded(input.excluded.split(",")),
+      allowed: canonicalIds(input.allowed.split(",")),
     };
     const signature = await signTyped(idleSpec(message));
     return submit((draft, ms) => submitIdle(draft, { ...message, signature }, ms));
