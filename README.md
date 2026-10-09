@@ -89,4 +89,4 @@ The project merges two earlier prototypes: the terminal wall MVP (characters spe
 
 ## License
 
-The code is MIT licensed (see [LICENSE](LICENSE)). The Trace artwork in `public/trace/`, the Trace and Traceforms names, and the collection belong to 0xvesty and are not covered by that license.
+The code is MIT licensed (see [LICENSE](LICENSE) and [NOTICE](NOTICE)). The Trace artwork in `public/trace/`, the Trace and Traceforms names, and the collection belong to 0xvesty and are not covered by that license.

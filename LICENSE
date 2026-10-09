@@ -19,10 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-This license covers the code of Traceformers Terminal. It does not cover the
-Trace artwork in public/trace/, the Trace and Traceforms names, or any other
-work by 0xvesty: those belong to their owners and are included only to show
-real tokens in this unofficial interface.
