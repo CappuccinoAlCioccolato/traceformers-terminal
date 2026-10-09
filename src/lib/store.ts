@@ -144,6 +144,8 @@ async function advance() {
   if (!registry) return;
   const target = blockAt(registry, Date.now());
   if (target <= registry.cursor) return;
+  const me = useWallet.getState().address;
+  const drawing = registry.conversations.filter((item) => item.draw && item.draw.address === me).map((item) => item.id);
   await mutate(
     async (draft) => {
       for (let block = Math.max(draft.cursor + 1, target - CATCH_UP); block <= target; block++) {
@@ -154,6 +156,16 @@ async function advance() {
     },
     () => true,
   );
+  const after = useApp.getState().registry;
+  for (const id of drawing) {
+    const conversation = after?.conversations.find((item) => item.id === id);
+    if (!conversation || conversation.draw) continue;
+    say(
+      conversation.status === "closed"
+        ? { ok: true, note: `Callback included for ${id}: the relayer drew the missing piece and the talk is closed.` }
+        : { ok: false, error: `The draw for ${id} found no eligible idle piece. Offers were not consumed.` },
+    );
+  }
 }
 
 export function bootApp(): () => void {

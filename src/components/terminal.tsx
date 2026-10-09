@@ -417,12 +417,12 @@ export function Terminal() {
             type="button"
             className="glyph-key"
             disabled={mouthCool > 0 || Array.from(draft).length >= MAX_GLYPHS}
-            onClick={() => setDraft(draft + glyph)}
+            onClick={() => setDraft((current) => (Array.from(current).length >= MAX_GLYPHS ? current : current + glyph))}
           >
             {glyph}
           </button>
         ))}
-        <button type="button" className="act" disabled={draft.length === 0} onClick={() => setDraft(Array.from(draft).slice(0, -1).join(""))}>
+        <button type="button" className="act" disabled={draft.length === 0} onClick={() => setDraft((current) => Array.from(current).slice(0, -1).join(""))}>
           back
         </button>
       </div>
