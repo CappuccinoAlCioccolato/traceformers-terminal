@@ -702,6 +702,13 @@ button.tok:hover {
   object-fit: contain;
   background: #ededed;
   margin-top: 0.75rem;
+  max-height: 34dvh;
+}
+
+@media (min-width: 64rem) {
+  .drawer-art {
+    max-height: none;
+  }
 }
 
 .traits {
@@ -755,4 +762,121 @@ button.tok:hover {
   .intro-row {
     grid-template-columns: 5.2rem minmax(0, 1fr);
   }
+}
+
+.graph-box {
+  position: relative;
+  height: min(62vh, 34rem);
+  min-height: 22rem;
+  margin-top: 0.75rem;
+  border: 1px solid var(--color-line);
+}
+
+.graph-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.legend-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.1rem;
+  margin: 0.6rem 0 0;
+  color: var(--color-dim);
+  font-size: 0.8rem;
+}
+
+.dot {
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  margin-right: 0.2rem;
+}
+
+.dot-character { background: var(--color-node-character); }
+.dot-base { background: var(--color-node-base); }
+.dot-encoder { background: var(--color-node-encoder); }
+.dot-wallet { background: var(--color-node-wallet); border-radius: 0; transform: rotate(45deg) scale(0.8); }
+
+.log-row,
+.pool-row,
+.board-row {
+  display: grid;
+  align-items: baseline;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: 2.6rem;
+  border: 0;
+  border-top: 1px solid var(--color-line);
+  background: transparent;
+  color: var(--color-muted);
+  font: inherit;
+  text-align: left;
+  padding: 0.35rem 0.25rem;
+  min-width: 0;
+}
+
+.log-row { grid-template-columns: 5.6rem 6.4rem minmax(0, 1fr) minmax(0, 1.2fr); }
+.pool-row { grid-template-columns: 4.2rem 3.6rem minmax(0, 1fr) auto; }
+.board-row { grid-template-columns: 2rem minmax(0, 1fr) auto; }
+
+.log-row:hover:not(:disabled),
+.pool-row:hover,
+.board-row:hover,
+.pool-row.is-on,
+.board-row.is-on {
+  color: var(--color-ink);
+  background: var(--color-raised);
+}
+
+.board-row.is-you,
+.board-row.is-you .board-sub,
+.board-row.is-you .board-pts {
+  color: var(--color-you);
+}
+
+.board-row.is-you {
+  box-shadow: inset 2px 0 0 var(--color-you);
+}
+
+.board-row.is-you .board-bar {
+  background: var(--color-you);
+}
+
+.board-sub {
+  display: block;
+  color: var(--color-dim);
+  font-size: 0.78rem;
+}
+
+.board-pts {
+  display: block;
+  color: var(--color-ink);
+  font-size: 1.25rem;
+}
+
+.board-bar {
+  display: block;
+  height: 1px;
+  margin-top: 0.4rem;
+  background: var(--color-accent);
+}
+
+.board-gap {
+  border-top: 1px solid var(--color-line);
+  padding: 0.4rem 0.25rem;
+  color: var(--color-dim);
+}
+
+.panel {
+  border: 1px solid var(--color-line);
+  padding: 0.85rem;
+}
+
+@media (max-width: 40rem) {
+  .log-row { grid-template-columns: 4.8rem 5.2rem minmax(0, 1fr); }
+  .log-row > :last-child { display: none; }
 }
