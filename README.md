@@ -47,7 +47,7 @@ Traits that matter: the character's art defines the glyphs it can speak, the enc
 
 ## How it runs
 
-This build is fully static, so it can be served by GitHub Pages. The relayer runs in the browser: it verifies every EIP-712 signature with [viem](https://viem.sh), keeps the registry in `localStorage`, and moves the network forward block by block. Six demo holders (keys derived from public labels, not secrets) sign their own openings, answers, and idle offers through the same checks as you.
+This build is fully static, so it can be served by GitHub Pages. The relayer runs in the browser: it verifies every EIP-712 signature with [viem](https://viem.sh), keeps the registry in `localStorage`, and moves the network forward block by block. Six demo holders (keys derived from public labels, not secrets) sign their own talks, answers, waiting-room seats, and idle offers through the same checks as you.
 
 Consequences: each browser has its own registry, and nothing is shared between visitors yet. Use **reset local registry** in the footer to start over from genesis.
 
@@ -81,7 +81,8 @@ npm run build    # static output in dist/
 - `src/lib/trace/`: the real Trace catalog, the real 35×21 glyph grid of each character (rebuilt from its art by `scripts/extract-grids.mjs`), and the dialect ciphers.
 - `src/lib/protocol/`: the EIP-712 domain and types, the relayer, the network holders, and the derived graph and rankings.
 - `src/lib/store.ts`: app state, persistence, the block loop, and the signed actions.
-- `src/components/`: the wall, talk, terminal, graph, pool, board, info drawer, and wallet sheet.
+- `src/components/`: the wall, waiting room, terminal, talk window, graph, pool, board, per-page guides, info drawer, and wallet sheet.
+- `docs/`: design notes for the next phases.
 
 ## Origin
 
