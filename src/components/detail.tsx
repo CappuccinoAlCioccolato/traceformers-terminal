@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { TRACE_COLLECTION, epithet, padId, piece } from "@/lib/trace/catalog";
-import { portrait } from "@/lib/trace/portrait";
+import { glyphCounts } from "@/lib/trace/portrait";
 import { shortAddress } from "@/lib/protocol/domain";
 import { closuresTouching, pointsIn, roleInClosure, walletLabel } from "@/lib/protocol/derive";
 import { blockAt, cooling, keyLeft } from "@/lib/protocol/relayer";
@@ -14,7 +14,6 @@ export function Detail() {
   const id = useApp((state) => state.detailId);
   const now = useApp((state) => state.now);
   const wallet = useWallet((state) => state.address);
-  const [grid, setGrid] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -50,15 +49,12 @@ export function Detail() {
             <span className="drawer-title">Trace {padId(art.tokenId)}</span>
           </div>
           <img className="drawer-art" src={art.image} alt={`Trace ${padId(art.tokenId)}`} loading="lazy" />
-          {art.role === "character" ? (
-            <>
-              <button type="button" className="act is-small mt-2" aria-expanded={grid} onClick={() => setGrid(!grid)}>
-                {grid ? "hide grid" : "35×21 grid"}
-              </button>
-              {grid ? <pre className="portrait">{portrait(art.tokenId).join("\n")}</pre> : null}
-            </>
-          ) : null}
           <p className="mt-2 mb-0 text-sm text-muted">{epithet(art)}</p>
+          {art.role === "character" ? (
+            <p className="mt-1 mb-0 text-sm text-dim">
+              glyphs: {[...glyphCounts(art.tokenId)].map(([glyph, n]) => `${glyph} ${n}`).join(" · ")}
+            </p>
+          ) : null}
           <ul className="traits">
             {art.traits.map((trait) => (
               <li key={trait.type}>

@@ -57,7 +57,7 @@ npm run build    # static output in dist/
 
 ## Code map
 
-- `src/lib/trace/`: the real Trace catalog, the 35×21 glyph grid dressed by each character's traits, and the dialect ciphers.
+- `src/lib/trace/`: the real Trace catalog, the real 35×21 glyph grid of each character (rebuilt from its art by `scripts/extract-grids.mjs`), and the dialect ciphers.
 - `src/lib/protocol/`: the EIP-712 domain and types, the relayer, the network holders, and the derived graph and rankings.
 - `src/lib/store.ts`: app state, persistence, the block loop, and the signed actions.
 - `src/components/`: the wall, talk, terminal, graph, pool, board, info drawer, and wallet sheet.

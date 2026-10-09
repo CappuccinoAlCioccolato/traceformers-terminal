@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { epithet, padId, piece, type Role } from "@/lib/trace/catalog";
+import { padId, piece, type Role } from "@/lib/trace/catalog";
 import { encode } from "@/lib/trace/cipher";
 import { dialectMark, visualCipher } from "@/lib/trace/marks";
-import { portrait, signature, speakable } from "@/lib/trace/portrait";
+import { glyphCounts, speakable } from "@/lib/trace/portrait";
 import { shortAddress } from "@/lib/protocol/domain";
 import { canRead, tally, walletLabel } from "@/lib/protocol/derive";
 import { MAX_GLYPHS, blockAt, cooling, eligibleIdle, keyLeft, unix, windowFor } from "@/lib/protocol/relayer";
@@ -99,7 +99,6 @@ export function Terminal() {
   const [mode, setMode] = useState<Mode>("open-base");
   const [answerer, setAnswerer] = useState<Answerer>("network");
   const [seconds, setSeconds] = useState(1800);
-  const [face, setFace] = useState(false);
 
   useEffect(() => {
     if (!characters.some((asset) => asset.id === characterId)) setCharacterId(characters[0]?.id ?? "");
@@ -288,7 +287,7 @@ export function Terminal() {
           <div key={asset.id} className="pick-line">
             <button type="button" className={cx("pick-row", on && "is-on")} aria-pressed={on} onClick={() => setCharacterId(asset.id)}>
               <span className="pick">{on ? ">" : " "}</span>
-              <span className="sig">{signature(asset.tokenId)}</span>
+              <img className="mini" src={piece(asset.id)!.image} alt="" />
               <span className="id">{padId(asset.tokenId)}</span>
               <span className="text-dim truncate">{on ? "speaks" : answerer === "mine" && mode.startsWith("open") ? "answers" : "waits"}</span>
               {cool > 0 ? <span className="text-accent">cool {cool}</span> : null}
@@ -299,26 +298,6 @@ export function Terminal() {
           </div>
         );
       })}
-      {speaker ? (
-        <div className="mt-1">
-          <button type="button" className="link-btn text-sm text-dim" aria-expanded={face} onClick={() => setFace(!face)}>
-            {face ? "hide portrait" : `show ${padId(speaker.tokenId)}'s portrait and glyph grid`}
-          </button>
-          {face ? (
-            <div className="face">
-              <figure className="m-0">
-                <img src={speaker.image} alt={`Trace ${padId(speaker.tokenId)}`} />
-                <figcaption className="text-sm text-dim">the NFT</figcaption>
-              </figure>
-              <figure className="m-0 min-w-0">
-                <pre className="portrait">{portrait(speaker.tokenId).join("\n")}</pre>
-                <figcaption className="text-sm text-dim">its 35×21 glyph grid, shaped by {epithet(speaker)}. the keys below are these glyphs.</figcaption>
-              </figure>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-
       <p className="legend mt-5 mb-1">mode</p>
       <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="mode">
         {MODES.map((item) => (
@@ -386,8 +365,17 @@ export function Terminal() {
         <span className="sig">{draft}</span>
         <span className="caret">_</span>
         <span className="ml-3 text-dim text-sm">
-          {Array.from(draft).length}/{MAX_GLYPHS} glyphs of {padId(speaker?.tokenId ?? 0)}
+          {Array.from(draft).length}/{MAX_GLYPHS}
         </span>
+      </p>
+      <p className="mt-0 mb-2 text-sm text-dim">
+        {padId(speaker?.tokenId ?? 0)} speaks only with the glyphs its art is drawn with:{" "}
+        {speaker
+          ? [...glyphCounts(speaker.tokenId)]
+              .sort((a, b) => glyphs.indexOf(a[0]) - glyphs.indexOf(b[0]))
+              .map(([glyph, n]) => `${glyph} ${n}`)
+              .join(" · ")
+          : ""}
       </p>
 
       <div className="flex flex-wrap gap-2">
