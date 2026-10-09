@@ -58,6 +58,10 @@
   }
 }
 
+.frame {
+  min-height: 100dvh;
+}
+
 .shell {
   max-width: 60rem;
   margin: 0 auto;
@@ -93,9 +97,20 @@
   border-bottom: 1px solid var(--color-line);
   padding: 0.85rem 1rem;
   color: var(--color-muted);
-  font: inherit;
-  line-height: 1.45;
-  white-space: pre-wrap;
+}
+
+.intro-row {
+  display: grid;
+  grid-template-columns: 6.5rem minmax(0, 1fr);
+  gap: 0.75rem;
+}
+
+.intro-row dt {
+  color: var(--color-cyan);
+}
+
+.intro-row dd {
+  margin: 0;
 }
 
 .muro-log {
@@ -450,5 +465,294 @@
   100% {
     transform: translateY(1px);
     opacity: 1;
+  }
+}
+
+/* ---- Traceformers additions ---------------------------------------------------------------------- */
+
+.text-accent { color: var(--color-accent); }
+.text-cyan { color: var(--color-cyan); }
+.text-dim { color: var(--color-dim); }
+.text-muted { color: var(--color-muted); }
+.text-ink { color: var(--color-ink); }
+.text-you { color: var(--color-you); }
+
+.views {
+  display: flex;
+  gap: 0.25rem 1.25rem;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--color-line);
+  padding: 0.35rem 1rem;
+}
+
+.view-tab {
+  min-height: 2.5rem;
+  background: transparent;
+  border: 0;
+  color: var(--color-dim);
+  font: inherit;
+  padding: 0;
+}
+
+.view-tab:hover {
+  color: var(--color-ink);
+}
+
+.view-tab.is-on {
+  color: var(--color-accent);
+}
+
+.note {
+  margin: 0;
+  border-bottom: 1px solid var(--color-line);
+  padding: 0.6rem 1rem;
+  color: var(--color-cyan);
+}
+
+.note.is-error {
+  color: var(--color-you);
+}
+
+.act.is-small {
+  min-height: 2.25rem;
+  padding: 0 0.6rem;
+}
+
+.act.is-on {
+  border-color: var(--color-cyan);
+  color: var(--color-cyan);
+}
+
+.link-btn {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.link-btn:hover {
+  color: var(--color-accent);
+}
+
+.tok {
+  color: var(--color-ink);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font: inherit;
+}
+
+button.tok:hover {
+  color: var(--color-accent);
+}
+
+.tok.is-mine,
+.muro-row .id.is-mine {
+  color: var(--color-accent);
+}
+
+.form-classic { color: var(--color-ink); }
+.form-inverted { color: var(--color-cyan); }
+.form-blink { color: var(--color-accent); }
+
+.muro-row.is-bare .cipher {
+  color: var(--color-dim);
+}
+
+.muro-row.is-gone .cipher {
+  color: var(--color-edge);
+}
+
+.talk-pieces {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr);
+  gap: 0.15rem 0.75rem;
+  margin: 0.75rem 0 0;
+}
+
+.talk-pieces dt {
+  color: var(--color-dim);
+}
+
+.talk-pieces dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.mode-box {
+  margin-top: 0.75rem;
+  border-left: 1px solid var(--color-cyan);
+  padding-left: 0.75rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  color: var(--color-dim);
+  min-width: 0;
+}
+
+.field select,
+.field input {
+  min-height: 2.5rem;
+  background: var(--color-field);
+  color: var(--color-ink);
+  border: 1px solid var(--color-edge);
+  font: inherit;
+  padding: 0 0.5rem;
+  min-width: 0;
+}
+
+.field select:focus,
+.field input:focus {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
+.face {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-start;
+  margin-top: 0.5rem;
+}
+
+.face img {
+  width: 9rem;
+  height: 9rem;
+  object-fit: contain;
+  background: #ededed;
+}
+
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgb(10 10 10 / 0.72);
+}
+
+.sheet {
+  position: absolute;
+  inset: auto 0.75rem 0.75rem 0.75rem;
+  max-height: calc(100dvh - 1.5rem);
+  overflow-y: auto;
+  background: var(--color-field);
+  border: 1px solid var(--color-edge);
+  padding: 1rem;
+}
+
+@media (min-width: 48rem) {
+  .sheet {
+    inset: 4rem 1rem auto auto;
+    width: 26rem;
+  }
+}
+
+.sheet-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  text-align: left;
+}
+
+.drawer {
+  position: fixed;
+  z-index: 30;
+  inset: auto 0 0 0;
+  max-height: 70dvh;
+  overflow-y: auto;
+  background: var(--color-field);
+  border-top: 1px solid var(--color-accent);
+  padding: 1rem;
+}
+
+@media (min-width: 64rem) {
+  .drawer {
+    inset: 0 0 0 auto;
+    width: 24rem;
+    max-height: none;
+    border-top: 0;
+    border-left: 1px solid var(--color-line);
+  }
+
+  .frame.has-drawer .shell {
+    margin-right: 24rem;
+  }
+}
+
+@media (min-width: 90rem) {
+  .frame.has-drawer .shell {
+    margin-right: auto;
+  }
+}
+
+.drawer-title {
+  font-size: 1.15rem;
+  color: var(--color-ink);
+}
+
+.drawer-art {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: contain;
+  background: #ededed;
+  margin-top: 0.75rem;
+}
+
+.traits {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.traits li {
+  border: 1px solid var(--color-line);
+  padding: 0.3rem 0.45rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.traits li span {
+  display: block;
+  color: var(--color-dim);
+  font-size: 0.72rem;
+}
+
+.closure-row {
+  display: grid;
+  grid-template-columns: 4.6rem 5.4rem minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: baseline;
+  width: 100%;
+  min-height: 2.5rem;
+  border: 0;
+  border-top: 1px solid var(--color-line);
+  background: transparent;
+  color: var(--color-muted);
+  font: inherit;
+  text-align: left;
+  padding: 0.25rem 0;
+}
+
+.closure-row:hover {
+  color: var(--color-ink);
+}
+
+@media (max-width: 40rem) {
+  .muro-row {
+    grid-template-columns: 0.8rem 3.6rem 3.2rem minmax(0, 1fr) auto;
+    column-gap: 0.4rem;
+  }
+
+  .intro-row {
+    grid-template-columns: 5.2rem minmax(0, 1fr);
   }
 }

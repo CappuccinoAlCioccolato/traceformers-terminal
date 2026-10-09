@@ -51,6 +51,8 @@ type AppState = {
   note: { text: string; tone: "ok" | "error" } | null;
   pending: boolean;
   awaiting: string | null;
+  answerTarget: string | null;
+  sheet: boolean;
 };
 
 export const useApp = create<AppState>(() => ({
@@ -63,6 +65,8 @@ export const useApp = create<AppState>(() => ({
   note: null,
   pending: false,
   awaiting: null,
+  answerTarget: null,
+  sheet: false,
 }));
 
 // Every change to the registry goes through one queue: a draft is cloned, the relayer works on it,
@@ -212,12 +216,22 @@ export function showConversation(convId: string) {
   window.requestAnimationFrame(() => document.getElementById("talk")?.scrollIntoView({ behavior: "smooth", block: "start" }));
 }
 
+/** Point the terminal at an open conversation to answer it. */
+export function setAnswerTarget(convId: string | null) {
+  useApp.setState({ answerTarget: convId });
+  if (convId) window.requestAnimationFrame(() => document.getElementById("terminal")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+}
+
 export function selectDetail(id: string | null) {
   useApp.setState({ detailId: id });
 }
 
 export function toggleIntro() {
   useApp.setState((state) => ({ intro: !state.intro }));
+}
+
+export function setSheet(sheet: boolean) {
+  useApp.setState({ sheet });
 }
 
 export function dismissNote() {
