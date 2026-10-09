@@ -2,14 +2,16 @@ import { useEffect } from "react";
 import { TRACE_COLLECTION, TRACE_SITE } from "@/lib/trace/catalog";
 import { shortAddress } from "@/lib/protocol/domain";
 import { blockAt } from "@/lib/protocol/relayer";
-import { bootApp, dismissNote, resetRegistry, setSheet, setView, toggleIntro, useApp, type View } from "@/lib/store";
+import { bootApp, resetRegistry, setSheet, setView, useApp, type View } from "@/lib/store";
 import { useWallet } from "@/lib/wallet/store";
 import { cx } from "@/components/common";
 import { Detail } from "@/components/detail";
+import { Guide, Note } from "@/components/help";
+import { TalkWindow } from "@/components/talk-window";
 import { Terminal } from "@/components/terminal";
-import { Stream, Talk } from "@/components/wall";
-import { WalletSheet } from "@/components/wallet-sheet";
 import { Views } from "@/components/views";
+import { Stream } from "@/components/wall";
+import { WalletSheet } from "@/components/wallet-sheet";
 
 const VIEWS: { id: View; label: string }[] = [
   { id: "wall", label: "wall" },
@@ -18,24 +20,10 @@ const VIEWS: { id: View; label: string }[] = [
   { id: "board", label: "board" },
 ];
 
-const HOW: [string, string][] = [
-  ["character", "speaks. only glyphs from its own 35×21 grid. the only piece with an intention: it opens."],
-  ["encoder", "hides the line in its dialect: binary, base64, or punched card."],
-  ["base", "opens the key of the thread. classic and inverted hold it 12 blocks, blink one."],
-  ["open", "your character speaks and brings a base or an encoder. one slot stays empty."],
-  ["answer", "another character signs a reply, cites your #, and fills the slot: its own piece, an idle one, or a draw."],
-  ["complete", "character + base + encoder in one signature. closes at once, 1 point each."],
-  ["points", "only a closed talk scores: 3 / 3 / 1 / 1. expired: 0. points stay on the NFT."],
-  ["read", "plaintext shows only in your terminal, only while a base of that talk keeps the key open."],
-  ["fee", "none. you sign EIP-712 messages; the relayer includes them."],
-];
-
 export function App() {
   const registry = useApp((state) => state.registry);
   const now = useApp((state) => state.now);
   const view = useApp((state) => state.view);
-  const intro = useApp((state) => state.intro);
-  const note = useApp((state) => state.note);
   const detailId = useApp((state) => state.detailId);
   const wallet = useWallet((state) => state.address);
   const discover = useWallet((state) => state.discover);
@@ -56,9 +44,6 @@ export function App() {
             <span>
               block <span key={block} className="block-tick">{block || "…"}</span>
             </span>
-            <button type="button" className="act is-small" aria-expanded={intro} onClick={toggleIntro}>
-              how
-            </button>
             <button type="button" className={cx("act is-small", !wallet && "is-ready")} onClick={() => setSheet(true)}>
               {wallet ? shortAddress(wallet) : "connect"}
             </button>
@@ -73,33 +58,13 @@ export function App() {
           ))}
         </nav>
 
-        {intro ? (
-          <dl className="intro">
-            {HOW.map(([term, text]) => (
-              <div key={term} className="intro-row">
-                <dt>{term}</dt>
-                <dd>{text}</dd>
-              </div>
-            ))}
-          </dl>
-        ) : null}
-
-        {note ? (
-          <p className={cx("note", note.tone === "error" && "is-error")} role="status">
-            <span>{note.tone === "error" ? "! " : "> "}</span>
-            {note.text}
-            <button type="button" className="link-btn ml-3 text-dim" onClick={dismissNote}>
-              dismiss
-            </button>
-          </p>
-        ) : null}
+        <Guide view={view} />
 
         {!registry ? (
           <p className="caret m-0 px-4 py-6">_</p>
         ) : view === "wall" ? (
           <>
             <Stream />
-            <Talk />
             <Terminal />
           </>
         ) : (
@@ -120,12 +85,14 @@ export function App() {
               reset local registry
             </button>
           </p>
+          <Note scope="footer" />
           <p className="mt-2 mb-0">
             <a href={TRACE_SITE}>traceforms.xyz</a> · <a href={TRACE_COLLECTION}>trace on opensea</a> · unofficial
           </p>
         </footer>
       </main>
       <Detail />
+      <TalkWindow />
       <WalletSheet />
     </div>
   );

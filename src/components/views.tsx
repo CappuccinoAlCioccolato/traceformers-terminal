@@ -1,10 +1,11 @@
 import { useCallback, useState } from "react";
-import { padId, piece, roleName, type Role } from "@/lib/trace/catalog";
+import { padId, piece, pieceId, type Role } from "@/lib/trace/catalog";
 import { shortAddress } from "@/lib/protocol/domain";
 import { buildGraph, ranksForRole, ranksForWallets, walletLabel } from "@/lib/protocol/derive";
 import { unix } from "@/lib/protocol/relayer";
 import type { LogRow, Registry } from "@/lib/protocol/types";
-import { offerIdle, revokeIdle, selectDetail, showConversation, transferPiece, useApp, type View } from "@/lib/store";
+import { delegatePiece, offerIdle, revokeIdle, selectDetail, showConversation, useApp, type View } from "@/lib/store";
+import { Note } from "./help";
 import { useWallet } from "@/lib/wallet/store";
 import { PieceMark, Tok, cx, formatStamp } from "./common";
 import { GraphCanvas } from "./graph-canvas";
@@ -21,9 +22,11 @@ const LOG_TEXT: Record<LogRow["kind"], string> = {
   Opened: "opened",
   Closed: "closed",
   Expired: "expired",
-  Transfer: "transfer",
+  Delegate: "delegate",
   Linked: "signed in",
 };
+
+const PAGE = 25;
 
 function logTarget(registry: Registry, row: LogRow): { conv?: string; detail?: string } {
   if (registry.conversations.some((item) => item.id === row.refId)) return { conv: row.refId };
@@ -32,45 +35,127 @@ function logTarget(registry: Registry, row: LogRow): { conv?: string; detail?: s
   return {};
 }
 
+/** The wallets and pieces a log row is about: its signer, its piece, or the slots of its conversation. */
+function logSubjects(registry: Registry, row: LogRow): { pieces: string[]; wallets: string[] } {
+  const wallets = row.by.startsWith("0x") ? [row.by] : [];
+  if (piece(row.refId)) return { pieces: [row.refId], wallets };
+  if (row.refId.startsWith("0x")) return { pieces: [], wallets: [...wallets, row.refId] };
+  const conversation = registry.conversations.find((item) => item.id === row.refId);
+  if (!conversation) return { pieces: [], wallets };
+  const closure = registry.closures.find((item) => item.id === conversation.closureId);
+  const pieces = [conversation.characterId, conversation.responderId, conversation.baseId, conversation.encoderId].filter((id): id is string => Boolean(id));
+  const held = closure
+    ? [closure.initiatorWallet, closure.responderWallet, closure.baseWallet, closure.encoderWallet].filter((id): id is string => Boolean(id))
+    : [conversation.opener];
+  return { pieces, wallets: [...wallets, ...held] };
+}
+
+type FocusRole = "" | "character" | "base" | "encoder" | "wallet";
+
 function Graph() {
   const registry = useApp((state) => state.registry)!;
   const detailId = useApp((state) => state.detailId);
   const wallet = useWallet((state) => state.address);
   const [focus, setFocus] = useState("");
+  const [role, setRole] = useState<FocusRole>("");
+  const [num, setNum] = useState("");
+  const [page, setPage] = useState(0);
   const graph = buildGraph(registry);
-  const onSelect = useCallback((id: string | null) => {
-    setFocus(id ?? "");
-    selectDetail(id);
-  }, []);
   const known = graph.nodes.some((node) => node.id === focus);
+
+  const apply = useCallback((id: string | null) => {
+    setFocus(id ?? "");
+    setPage(0);
+    selectDetail(id);
+    if (!id) {
+      setRole("");
+      setNum("");
+    } else if (id.startsWith("w:")) {
+      setRole("wallet");
+      setNum(id);
+    } else {
+      setRole(piece(id)?.role ?? "");
+      setNum(String(piece(id)?.tokenId ?? ""));
+    }
+  }, []);
+
+  const pickRole = (next: FocusRole) => {
+    setRole(next);
+    setNum("");
+    setFocus("");
+    setPage(0);
+    selectDetail(null);
+  };
+  const pickNumber = (value: string) => {
+    const digits = value.replace(/\D/g, "");
+    setNum(digits);
+    setPage(0);
+    if (role && role !== "wallet" && digits) {
+      const id = pieceId(role, Number(digits));
+      setFocus(id);
+      selectDetail(piece(id) ? id : null);
+    } else {
+      setFocus("");
+    }
+  };
+  const wallets = graph.nodes.filter((node) => node.kind === "wallet");
+
+  const rows = [...registry.log].reverse().filter((row) => {
+    if (!focus) return true;
+    const subjects = logSubjects(registry, row);
+    return focus.startsWith("w:") ? subjects.wallets.includes(focus.slice(2)) : subjects.pieces.includes(focus);
+  });
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE));
+  const current = Math.min(page, pages - 1);
+  const visible = rows.slice(current * PAGE, current * PAGE + PAGE);
 
   return (
     <section className="px-4 py-3" aria-label="Graph">
       <div className="flex flex-wrap items-end gap-3">
         <label className="field">
           <span>focus</span>
-          <select
-            value={known ? focus : ""}
-            onChange={(event) => {
-              setFocus(event.target.value);
-              selectDetail(event.target.value || null);
-            }}
-          >
+          <select value={role} onChange={(event) => pickRole(event.target.value as FocusRole)}>
             <option value="">entire network</option>
-            {wallet && graph.nodes.some((node) => node.id === `w:${wallet}`) ? <option value={`w:${wallet}`}>my wallet</option> : null}
-            {graph.nodes.map((node) => (
-              <option key={node.id} value={node.id}>
-                {roleName(node.kind)} · {node.label}
-              </option>
-            ))}
+            <option value="character">character</option>
+            <option value="base">base</option>
+            <option value="encoder">encoder</option>
+            <option value="wallet">wallet</option>
           </select>
         </label>
-        <p className="m-0 pb-2 text-sm text-dim">
-          {known ? "neighbors stay lit. click empty space to see the whole network." : `${graph.nodes.length} nodes · ${registry.closures.length} closures. click a node to focus it.`}
-        </p>
+        {role && role !== "wallet" ? (
+          <label className="field">
+            <span>#</span>
+            <input className="w-24" value={num} inputMode="numeric" placeholder="21" autoFocus onChange={(event) => pickNumber(event.target.value)} />
+          </label>
+        ) : null}
+        {role === "wallet" ? (
+          <label className="field">
+            <span>holder</span>
+            <select value={focus} onChange={(event) => apply(event.target.value || null)}>
+              <option value="">pick one</option>
+              {wallets.map((node) => (
+                <option key={node.id} value={node.id}>
+                  {node.address === wallet ? "my wallet" : node.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+        {focus ? (
+          <button type="button" className="act is-small" onClick={() => apply(null)}>
+            clear
+          </button>
+        ) : null}
       </div>
+      <p className="mt-2 mb-0 text-sm text-dim">
+        {known
+          ? "its neighbors stay lit and the log lists only its transactions. click empty space to see the whole network."
+          : focus
+            ? "that piece has no closed talk yet, so it is not in the graph."
+            : `${graph.nodes.length} nodes · ${registry.closures.length} closures. click a node to focus it.`}
+      </p>
       <div className="graph-box">
-        <GraphCanvas registry={registry} focus={known ? focus : null} selected={detailId} wallet={wallet} onSelect={onSelect} />
+        <GraphCanvas registry={registry} focus={known ? focus : null} selected={detailId} wallet={wallet} onSelect={apply} />
       </div>
       <p className="legend-row">
         <span>
@@ -89,31 +174,48 @@ function Graph() {
         <span className="text-you">○ yours</span>
       </p>
 
-      <p className="legend mt-5 mb-1">log · click a transaction to read the talk</p>
+      <div className="mt-5 mb-1 flex flex-wrap items-baseline justify-between gap-2">
+        <p className="legend m-0">
+          log{focus ? ` · ${known || piece(focus) ? (focus.startsWith("w:") ? walletLabel(registry, focus.slice(2)) : `${piece(focus)?.role} ${padId(piece(focus)?.tokenId ?? 0)}`) : "focus"}` : ""} · {rows.length}{" "}
+          {rows.length === 1 ? "transaction" : "transactions"} · click one to read the talk
+        </p>
+        {pages > 1 ? (
+          <span className="pager">
+            <button type="button" className="act is-small" disabled={current === 0} onClick={() => setPage(current - 1)}>
+              prev
+            </button>
+            <span className="text-dim">
+              {current + 1}/{pages}
+            </span>
+            <button type="button" className="act is-small" disabled={current >= pages - 1} onClick={() => setPage(current + 1)}>
+              next
+            </button>
+          </span>
+        ) : null}
+      </div>
       <ul className="m-0 list-none p-0">
-        {[...registry.log]
-          .reverse()
-          .slice(0, 24)
-          .map((row) => {
-            const target = logTarget(registry, row);
-            return (
-              <li key={row.id}>
-                <button
-                  type="button"
-                  className="log-row"
-                  disabled={!target.conv && !target.detail}
-                  onClick={() => (target.conv ? showConversation(target.conv) : selectDetail(target.detail ?? null))}
-                >
-                  <span className="text-dim">{row.block}</span>
-                  <span className={row.kind === "Closed" ? "text-accent" : row.kind === "Expired" ? "text-dim" : "text-cyan"}>{LOG_TEXT[row.kind]}</span>
-                  <span className="truncate">{piece(row.refId) ? padId(piece(row.refId)!.tokenId) : row.refId.startsWith("0x") ? shortAddress(row.refId) : row.refId}</span>
-                  <span className="text-dim truncate">
-                    {row.by === "relayer" ? "relayer" : walletLabel(registry, row.by)} · {formatStamp(row.at)}
-                  </span>
-                </button>
-              </li>
-            );
-          })}
+        {visible.length === 0 ? <li className="text-dim">no transactions_</li> : null}
+        {visible.map((row) => {
+          const target = logTarget(registry, row);
+          const mine = Boolean(wallet) && (row.by === wallet || logSubjects(registry, row).wallets.includes(wallet!));
+          return (
+            <li key={row.id}>
+              <button
+                type="button"
+                className={cx("log-row", mine && "is-you")}
+                disabled={!target.conv && !target.detail}
+                onClick={() => (target.conv ? showConversation(target.conv) : selectDetail(target.detail ?? null))}
+              >
+                <span className="text-dim">{row.block}</span>
+                <span className={mine ? "" : row.kind === "Closed" ? "text-accent" : row.kind === "Expired" ? "text-dim" : "text-cyan"}>{LOG_TEXT[row.kind]}</span>
+                <span className="truncate">{piece(row.refId) ? padId(piece(row.refId)!.tokenId) : row.refId.startsWith("0x") ? shortAddress(row.refId) : row.refId}</span>
+                <span className={cx("truncate", !mine && "text-dim")}>
+                  {row.by === "relayer" ? "relayer" : row.by === wallet ? "you" : walletLabel(registry, row.by)} · {formatStamp(row.at)}
+                </span>
+              </button>
+            </li>
+          );
+        })}
       </ul>
     </section>
   );
@@ -155,7 +257,7 @@ function Pool() {
                 <Tok id={offer.assetId} mine={offer.owner === wallet} />
                 <span className="text-dim truncate">
                   {offer.role} · {offer.maxUses ? `${offer.uses}/${offer.maxUses} uses` : "until revoked"}
-                  {offer.excluded ? ` · excludes ${offer.excluded.split(",").map((id) => padId(piece(id)?.tokenId ?? 0)).join(" ")}` : ""}
+                  {offer.excluded ? ` · not for ${offer.excluded.split(",").map((id) => padId(piece(id)?.tokenId ?? 0)).join(" ")}` : ""}
                   {offer.expiry ? (expired ? " · expired" : ` · until ${new Date(offer.expiry * 1000).toISOString().slice(0, 10)}`) : ""}
                 </span>
                 <span className={offer.owner === wallet ? "text-you" : "text-dim"}>{offer.owner === wallet ? "you" : walletLabel(registry, offer.owner)}</span>
@@ -188,9 +290,9 @@ function Pool() {
               <span>valid for days · empty = no expiry</span>
               <input value={days} inputMode="decimal" onChange={(event) => setDays(event.target.value.replace(/[^\d.]/g, ""))} />
             </label>
-            <label className="field">
-              <span>excluded characters · ids like c-2, c-14</span>
-              <input value={excluded} spellCheck={false} onChange={(event) => setExcluded(event.target.value)} placeholder="c-2, c-14" />
+            <label className="field sm:col-span-2">
+              <span>characters that may not use it · their # separated by commas, empty = anyone</span>
+              <input value={excluded} spellCheck={false} inputMode="numeric" onChange={(event) => setExcluded(event.target.value.replace(/[^\d,# ]/g, ""))} placeholder="#2, #14" />
             </label>
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
@@ -198,7 +300,7 @@ function Pool() {
               type="button"
               className="act is-ready"
               disabled={pending}
-              onClick={() => void offerIdle({ assetId: chosen.id, maxUses: cap ? Number(cap) : 0, days: days ? Number(days) : 0, excluded })}
+              onClick={() => void offerIdle({ assetId: chosen.id, maxUses: cap ? Number(cap) : 0, days: days ? Number(days) : 0, excluded: toCharacterIds(excluded) })}
             >
               sign the offer
             </button>
@@ -206,15 +308,16 @@ function Pool() {
               revoke
             </button>
           </div>
+          <Note scope="pool-offer" />
         </div>
       ) : null}
 
       {linked && give ? (
         <div className="panel mt-5">
-          <p className="prompt m-0">transfer</p>
+          <p className="prompt m-0">delegate</p>
           <p className="mt-2 mb-0 text-sm text-dim">
-            a change of holder inside this registry. it is not an OpenSea sale and does not move the Trace token on Ethereum. after it, earlier signatures on that
-            piece no longer count: only the holder at inclusion time can sign.
+            hand the signing rights of one of your pieces to another address in this registry. it is not a sale and does not move the Trace token on Ethereum. after it,
+            your earlier signatures on that piece stop counting: only the new holder can sign with it.
           </p>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             <label className="field">
@@ -228,13 +331,14 @@ function Pool() {
               </select>
             </label>
             <label className="field">
-              <span>recipient</span>
+              <span>to address</span>
               <input value={giveTo} placeholder="0x…" spellCheck={false} onChange={(event) => setGiveTo(event.target.value)} />
             </label>
           </div>
-          <button type="button" className="act mt-3" disabled={pending || !giveTo.trim()} onClick={() => void transferPiece(give.id, giveTo)}>
-            sign transfer
+          <button type="button" className="act mt-3" disabled={pending || !giveTo.trim()} onClick={() => void delegatePiece(give.id, giveTo)}>
+            sign delegation
           </button>
+          <Note scope="pool-delegate" />
         </div>
       ) : null}
 
@@ -322,4 +426,14 @@ function Board() {
       </ol>
     </section>
   );
+}
+
+/** "#2, 14" becomes "c-14,c-2": the registry ids of the characters an offer bars. */
+function toCharacterIds(text: string): string {
+  return text
+    .split(",")
+    .map((item) => item.replace(/\D/g, ""))
+    .filter(Boolean)
+    .map((digits) => pieceId("character", Number(digits)))
+    .join(",");
 }

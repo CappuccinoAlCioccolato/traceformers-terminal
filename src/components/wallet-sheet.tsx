@@ -1,6 +1,7 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { shortAddress } from "@/lib/protocol/domain";
-import { linkWallet, setSheet, useApp } from "@/lib/store";
+import { linkWallet, setHandle, setSheet, useApp } from "@/lib/store";
+import { Note } from "./help";
 import { useWallet } from "@/lib/wallet/store";
 
 export function WalletSheet() {
@@ -8,6 +9,8 @@ export function WalletSheet() {
   const registry = useApp((state) => state.registry);
   const pending = useApp((state) => state.pending);
   const wallet = useWallet();
+  const saved = wallet.address ? (registry?.handles[wallet.address] ?? "") : "";
+  const [handle, setHandleText] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -59,6 +62,24 @@ export function WalletSheet() {
               sign in with this address
             </button>
           ) : null}
+          {wallet.address && linked ? (
+            <form
+              className="mt-2 flex items-end gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void setHandle(handle ?? saved).then(() => setHandleText(null));
+              }}
+            >
+              <label className="field grow">
+                <span>your X username · tagged when a talk with your pieces is shared</span>
+                <input value={handle ?? saved} placeholder="@username" spellCheck={false} autoComplete="off" onChange={(event) => setHandleText(event.target.value)} />
+              </label>
+              <button type="submit" className="act">
+                save
+              </button>
+            </form>
+          ) : null}
+          <Note scope="wallet" />
           {wallet.address ? (
             <button type="button" className="act sheet-btn" onClick={() => wallet.disconnect()}>
               disconnect

@@ -4,9 +4,9 @@ import { encode } from "@/lib/trace/cipher";
 import { dialectMark, visualCipher } from "@/lib/trace/marks";
 import { portrait, signature, speakable } from "@/lib/trace/portrait";
 import { shortAddress } from "@/lib/protocol/domain";
-import { canRead, tally } from "@/lib/protocol/derive";
-import { MAX_GLYPHS, blockAt, cooling, eligibleIdle, keyLeft, unix } from "@/lib/protocol/relayer";
-import type { Registry } from "@/lib/protocol/types";
+import { canRead, tally, walletLabel } from "@/lib/protocol/derive";
+import { MAX_GLYPHS, blockAt, cooling, eligibleIdle, keyLeft, unix, windowFor } from "@/lib/protocol/relayer";
+import type { Conversation, Registry } from "@/lib/protocol/types";
 import {
   completeConversation,
   linkWallet,
@@ -21,15 +21,16 @@ import {
   type Answerer,
 } from "@/lib/store";
 import { useWallet } from "@/lib/wallet/store";
+import { Note } from "./help";
 import { PieceMark, Tok, cx, formatLeft } from "./common";
 
 type Mode = "open-base" | "open-encoder" | "complete" | "answer";
 
-const MODES: { id: Mode; label: string }[] = [
-  { id: "open-base", label: "open +base" },
-  { id: "open-encoder", label: "open +encoder" },
-  { id: "complete", label: "complete" },
-  { id: "answer", label: "answer" },
+const MODES: { id: Mode; label: string; text: string }[] = [
+  { id: "open-base", label: "open +base", text: "your character speaks and brings a base. the encoder slot stays empty: whoever answers fills it. until then the line is not encoded." },
+  { id: "open-encoder", label: "open +encoder", text: "your character speaks and brings an encoder. the base slot stays empty: whoever answers fills it. until then the line is sealed." },
+  { id: "complete", label: "complete", text: "character, base, and encoder in one signature. it closes at once, 1 point each. a piece you do not hold must be idle in the pool." },
+  { id: "answer", label: "answer", text: "reply to an opening with your character and fill its empty slot: your piece, an idle one, or a draw from the pool." },
 ];
 
 const FORM_ORDER = ["classic", "inverted", "blink"];
@@ -40,10 +41,43 @@ const WINDOWS = [
   { seconds: 7200, label: "2h" },
 ];
 
-function idleChoices(registry: Registry, role: Role, wallet: string, banned: string[], characters: string[], ms: number) {
+type Choice = { id: string; own: boolean; label: string };
+
+/** What a role slot looks like in the current mode: chosen by you, filled by someone else, or left empty. */
+type SlotPlan = { kind: "pick"; choices: Choice[]; note: string } | { kind: "fixed"; id: string; note: string } | { kind: "empty"; note: string };
+
+function ownChoices(registry: Registry, wallet: string, role: Role): Choice[] {
+  return registry.assets
+    .filter((asset) => asset.owner === wallet && asset.role === role)
+    .sort((a, b) => FORM_ORDER.indexOf(piece(a.id)?.form ?? "") - FORM_ORDER.indexOf(piece(b.id)?.form ?? "") || a.tokenId - b.tokenId)
+    .map((asset) => ({ id: asset.id, own: true, label: "mine" }));
+}
+
+function idleChoices(registry: Registry, role: Role, wallet: string, banned: string[], characters: string[], ms: number): Choice[] {
   return eligibleIdle(registry, role, banned, characters, ms)
     .filter((offer) => offer.owner !== wallet)
-    .map((offer) => ({ id: offer.assetId, label: `${padId(piece(offer.assetId)!.tokenId)} idle · ${piece(offer.assetId)?.dialect ?? piece(offer.assetId)?.form}` }));
+    .map((offer) => ({ id: offer.assetId, own: false, label: `idle · ${walletLabel(registry, offer.owner)}` }));
+}
+
+function plan(role: Role, mode: Mode, registry: Registry, wallet: string, characterId: string, target: Conversation | null, ms: number): SlotPlan {
+  const own = ownChoices(registry, wallet, role);
+  if (mode === "open-base" || mode === "open-encoder") {
+    const brought = mode === "open-base" ? "base" : "encoder";
+    if (role === brought) return { kind: "pick", choices: own, note: "you bring it" };
+    return { kind: "empty", note: `empty slot · whoever answers brings the ${role}` };
+  }
+  if (mode === "complete") {
+    return { kind: "pick", choices: [...own, ...idleChoices(registry, role, wallet, [], [characterId], ms)], note: "yours, or an idle one" };
+  }
+  if (!target) return { kind: "empty", note: "pick an opening above" };
+  const filled = role === "base" ? target.baseId : target.encoderId;
+  if (filled) return { kind: "fixed", id: filled, note: `brought by ${padId(piece(target.characterId)?.tokenId ?? 0)}` };
+  const banned = [target.characterId, target.baseId ?? "", target.encoderId ?? ""];
+  return {
+    kind: "pick",
+    choices: [{ id: "", own: false, label: "the relayer draws from the idle pool" }, ...own, ...idleChoices(registry, role, wallet, banned, [target.characterId, characterId], ms)],
+    note: "you fill the empty slot",
+  };
 }
 
 export function Terminal() {
@@ -57,42 +91,23 @@ export function Terminal() {
   const busy = useWallet((state) => state.busy);
   const block = blockAt(registry, now);
   const linked = Boolean(wallet && registry.links.includes(wallet));
-  const mine = useMemo(() => (wallet ? registry.assets.filter((asset) => asset.owner === wallet) : []), [registry, wallet]);
-  const characters = mine.filter((asset) => asset.role === "character");
-  const bases = mine.filter((asset) => asset.role === "base").sort((a, b) => FORM_ORDER.indexOf(piece(a.id)?.form ?? "") - FORM_ORDER.indexOf(piece(b.id)?.form ?? ""));
-  const encoders = mine.filter((asset) => asset.role === "encoder");
+  const characters = useMemo(() => (wallet ? registry.assets.filter((asset) => asset.owner === wallet && asset.role === "character") : []), [registry, wallet]);
 
   const [characterId, setCharacterId] = useState("");
-  const [baseId, setBaseId] = useState("");
-  const [encoderId, setEncoderId] = useState("");
+  const [picked, setPicked] = useState<Record<"base" | "encoder", string | null>>({ base: null, encoder: null });
   const [draft, setDraft] = useState("");
   const [mode, setMode] = useState<Mode>("open-base");
   const [answerer, setAnswerer] = useState<Answerer>("network");
   const [seconds, setSeconds] = useState(1800);
   const [face, setFace] = useState(false);
-  const [completeBase, setCompleteBase] = useState("");
-  const [completeEncoder, setCompleteEncoder] = useState("");
-  const [answerPiece, setAnswerPiece] = useState("");
 
   useEffect(() => {
     if (!characters.some((asset) => asset.id === characterId)) setCharacterId(characters[0]?.id ?? "");
-    if (!bases.some((asset) => asset.id === baseId)) setBaseId(bases[0]?.id ?? "");
-    if (!encoders.some((asset) => asset.id === encoderId)) setEncoderId(encoders[0]?.id ?? "");
-  }, [characters, bases, encoders, characterId, baseId, encoderId]);
+  }, [characters, characterId]);
 
   useEffect(() => {
     if (answerTarget) setMode("answer");
   }, [answerTarget]);
-
-  const answerable = registry.conversations.filter(
-    (item) => item.status === "open" && item.kind === "targeted" && !item.draw && item.deadline > unix(now) && item.characterId !== characterId,
-  );
-  const target = answerable.find((item) => item.id === answerTarget) ?? null;
-  const targetEmpty: Role | null = target ? (target.baseId ? "encoder" : "base") : null;
-
-  useEffect(() => {
-    if (mode === "answer" && answerTarget && !answerable.some((item) => item.id === answerTarget)) setAnswerTarget(null);
-  }, [mode, answerTarget, answerable]);
 
   if (!wallet) {
     return (
@@ -128,67 +143,57 @@ export function Terminal() {
             wallet
           </button>
         </div>
+        <Note scope="wallet" />
       </section>
     );
   }
 
+  const ms = Date.now();
   const speaker = piece(characterId);
   const glyphs = speaker ? speakable(speaker.tokenId) : [];
   const mouthCool = characterId ? cooling(registry, characterId, block) : 0;
   const other = characters.find((asset) => asset.id !== characterId);
+  const answerable = registry.conversations.filter(
+    (item) => item.status === "open" && item.kind === "targeted" && !item.draw && item.deadline > unix(now) && item.characterId !== characterId,
+  );
+  const target = mode === "answer" ? (answerable.find((item) => item.id === answerTarget) ?? null) : null;
 
-  const ms = Date.now();
-  const completeBases = [
-    ...bases.map((asset) => ({ id: asset.id, label: `${padId(asset.tokenId)} mine · ${piece(asset.id)?.form}` })),
-    ...idleChoices(registry, "base", wallet, [], [characterId], ms),
-  ];
-  const completeEncoders = [
-    ...encoders.map((asset) => ({ id: asset.id, label: `${padId(asset.tokenId)} mine · ${piece(asset.id)?.dialect}` })),
-    ...idleChoices(registry, "encoder", wallet, [], [characterId], ms),
-  ];
-  const cBase = completeBases.some((item) => item.id === completeBase) ? completeBase : baseId;
-  const cEncoder = completeEncoders.some((item) => item.id === completeEncoder) ? completeEncoder : encoderId;
-  const answerPieces = target && targetEmpty
-    ? [
-        { id: "", label: "draw from the idle pool" },
-        ...mine
-          .filter((asset) => asset.role === targetEmpty && cooling(registry, asset.id, block) === 0)
-          .map((asset) => ({ id: asset.id, label: `${padId(asset.tokenId)} mine · ${piece(asset.id)?.dialect ?? piece(asset.id)?.form}` })),
-        ...idleChoices(registry, targetEmpty, wallet, [target.characterId, target.baseId ?? "", target.encoderId ?? ""], [target.characterId, characterId], ms),
-      ]
-    : [];
-  const aPiece = answerPieces.some((item) => item.id === answerPiece) ? answerPiece : (answerPieces[1]?.id ?? "");
+  const plans: Record<"base" | "encoder", SlotPlan> = {
+    base: plan("base", mode, registry, wallet, characterId, target, ms),
+    encoder: plan("encoder", mode, registry, wallet, characterId, target, ms),
+  };
+  const chosen = (role: "base" | "encoder"): string | null => {
+    const slot = plans[role];
+    if (slot.kind === "fixed") return slot.id;
+    if (slot.kind === "empty") return null;
+    const current = picked[role];
+    if (current !== null && slot.choices.some((item) => item.id === current)) return current;
+    const own = slot.choices.find((item) => item.own && cooling(registry, item.id, block) === 0) ?? slot.choices.find((item) => item.own);
+    return own?.id ?? slot.choices[0]?.id ?? null;
+  };
+  const baseId = chosen("base");
+  const encoderId = chosen("encoder");
+  const dialect = encoderId ? (piece(encoderId)?.dialect ?? null) : null;
+  const attached = mode === "open-base" ? baseId : mode === "open-encoder" ? encoderId : null;
+  const attachedCool = attached ? cooling(registry, attached, block) : 0;
 
-  // The encoder that will hide this line, when it is known before sending.
-  const lineEncoder =
-    mode === "open-encoder" || mode === "open-base"
-      ? mode === "open-encoder"
-        ? encoderId
-        : ""
-      : mode === "complete"
-        ? cEncoder
-        : target?.encoderId ?? (targetEmpty === "encoder" ? aPiece : "");
-  const dialect = lineEncoder ? piece(lineEncoder)?.dialect ?? null : null;
-
-  const coolingAttached =
-    mode === "open-base" ? cooling(registry, baseId, block) : mode === "open-encoder" ? cooling(registry, encoderId, block) : 0;
   const ready =
     !pending &&
     !busy &&
     draft.length > 0 &&
     mouthCool === 0 &&
-    coolingAttached === 0 &&
-    (mode === "open-base" ? Boolean(baseId) : mode === "open-encoder" ? Boolean(encoderId) : mode === "complete" ? Boolean(cBase && cEncoder) : Boolean(target));
+    attachedCool === 0 &&
+    (mode === "open-base" || mode === "open-encoder" ? Boolean(attached) : mode === "complete" ? Boolean(baseId && encoderId) : Boolean(target));
 
   async function send() {
-    const plaintext = draft;
     let result;
     if (mode === "open-base" || mode === "open-encoder") {
-      result = await openConversation({ characterId, attachedId: mode === "open-base" ? baseId : encoderId, plaintext, seconds, answerer });
+      result = await openConversation({ characterId, attachedId: attached!, plaintext: draft, seconds, answerer });
     } else if (mode === "complete") {
-      result = await completeConversation({ characterId, baseId: cBase, encoderId: cEncoder, plaintext });
+      result = await completeConversation({ characterId, baseId: baseId!, encoderId: encoderId!, plaintext: draft });
     } else if (target) {
-      result = await respondTo({ convId: target.id, characterId, pieceId: aPiece, plaintext });
+      const filling = target.baseId ? encoderId : baseId;
+      result = await respondTo({ convId: target.id, characterId, pieceId: filling ?? "", plaintext: draft });
       if (result.ok) setAnswerTarget(null);
     }
     if (result?.ok) setDraft("");
@@ -198,13 +203,82 @@ export function Terminal() {
   const readConvs = [...new Set(readable.map((line) => line.convId))].slice(-5);
   const counts = tally(readable);
 
+  const section = (role: "base" | "encoder") => {
+    const slot = plans[role];
+    const selected = role === "base" ? baseId : encoderId;
+    const title = role === "base" ? "base · holds the key" : "encoder · hides the line";
+    return (
+      <div className="slot">
+        <p className="legend m-0">
+          {title} <span className="text-cyan">· {slot.note}</span>
+        </p>
+        {slot.kind === "empty" ? <p className="slot-empty">···· waiting</p> : null}
+        {slot.kind === "fixed" ? (
+          <p className="slot-fixed">
+            <PieceMark id={slot.id} /> <Tok id={slot.id} onClick={() => selectDetail(slot.id)} />{" "}
+            <span className="text-dim">{piece(slot.id)?.dialect ?? piece(slot.id)?.form}</span>
+          </p>
+        ) : null}
+        {slot.kind === "pick"
+          ? slot.choices.map((item) => {
+              const on = item.id === selected;
+              if (!item.id) {
+                return (
+                  <button key="draw" type="button" className={cx("pick-row", on && "is-on")} aria-pressed={on} onClick={() => setPicked({ ...picked, [role]: "" })}>
+                    <span className="pick">{on ? ">" : " "}</span>
+                    <span className="text-dim">????</span>
+                    <span className="text-dim">{item.label}</span>
+                  </button>
+                );
+              }
+              const art = piece(item.id)!;
+              const cool = cooling(registry, item.id, block);
+              const left = role === "base" ? keyLeft(registry, item.id, block) : 0;
+              return (
+                <div key={item.id} className="pick-line">
+                  <button type="button" className={cx("pick-row", on && "is-on")} aria-pressed={on} onClick={() => setPicked({ ...picked, [role]: item.id })}>
+                    <span className="pick">{on ? ">" : " "}</span>
+                    <PieceMark id={item.id} />
+                    <span className="id">{padId(art.tokenId)}</span>
+                    <span className="text-dim truncate">
+                      {art.dialect ?? art.form}
+                      {item.own ? "" : ` · ${item.label}`}
+                    </span>
+                    {left > 0 ? <span className="text-cyan">key open {left}</span> : null}
+                    {cool > 0 ? <span className="text-accent">cool {cool}</span> : null}
+                  </button>
+                  {role === "base" && item.own ? (
+                    <button
+                      type="button"
+                      className="act is-small"
+                      title={`read the talks of this base for ${windowFor(item.id)} block${windowFor(item.id) === 1 ? "" : "s"}`}
+                      disabled={cool > 0 || pending}
+                      onClick={() => void openKeyOf(item.id)}
+                    >
+                      open key
+                    </button>
+                  ) : null}
+                  <button type="button" className="act is-small" onClick={() => selectDetail(item.id)}>
+                    info
+                  </button>
+                </div>
+              );
+            })
+          : null}
+        {role === "base" && slot.kind === "pick" && slot.choices.some((item) => item.own) ? (
+          <p className="slot-hint">open key: read the plaintext of this base&apos;s talks for 12 blocks (blink: 1). no points move. a base also opens its key when it joins a talk.</p>
+        ) : null}
+      </div>
+    );
+  };
+
   return (
     <section id="terminal" className="terminal" aria-label="Local terminal">
       <p className="prompt m-0">
         traceformers@local:~$ <span className="text-dim">{shortAddress(wallet)} · {providerName}</span>
       </p>
 
-      {mine.length === 0 ? <p className="mt-3 mb-0 text-dim">this address holds no pieces. reset the local registry from the footer to get a new set.</p> : null}
+      {characters.length === 0 ? <p className="mt-3 mb-0 text-dim">this address holds no character. reset the local registry from the footer to get a new set.</p> : null}
 
       <p className="legend mt-4 mb-0">character · who speaks</p>
       {characters.map((asset) => {
@@ -226,74 +300,24 @@ export function Terminal() {
         );
       })}
       {speaker ? (
-        <>
-          <div className="mt-1 flex flex-wrap items-center gap-2">
-            <button type="button" className="act is-small" aria-expanded={face} onClick={() => setFace(!face)}>
-              face
-            </button>
-            <span className="text-dim text-sm">{epithet(speaker)}</span>
-          </div>
+        <div className="mt-1">
+          <button type="button" className="link-btn text-sm text-dim" aria-expanded={face} onClick={() => setFace(!face)}>
+            {face ? "hide portrait" : `show ${padId(speaker.tokenId)}'s portrait and glyph grid`}
+          </button>
           {face ? (
             <div className="face">
-              <img src={speaker.image} alt={`Trace ${padId(speaker.tokenId)}`} />
-              <pre className="portrait">{portrait(speaker.tokenId).join("\n")}</pre>
+              <figure className="m-0">
+                <img src={speaker.image} alt={`Trace ${padId(speaker.tokenId)}`} />
+                <figcaption className="text-sm text-dim">the NFT</figcaption>
+              </figure>
+              <figure className="m-0 min-w-0">
+                <pre className="portrait">{portrait(speaker.tokenId).join("\n")}</pre>
+                <figcaption className="text-sm text-dim">its 35×21 glyph grid, shaped by {epithet(speaker)}. the keys below are these glyphs.</figcaption>
+              </figure>
             </div>
           ) : null}
-        </>
+        </div>
       ) : null}
-
-      <p className="legend mt-4 mb-0">base · opens the key</p>
-      {bases.map((asset) => {
-        const on = asset.id === baseId;
-        const left = keyLeft(registry, asset.id, block);
-        const cool = cooling(registry, asset.id, block);
-        const idle = registry.idles.some((offer) => offer.assetId === asset.id);
-        return (
-          <div key={asset.id} className="pick-line">
-            <button type="button" className={cx("pick-row", on && "is-on")} aria-pressed={on} onClick={() => setBaseId(asset.id)}>
-              <span className="pick">{on ? ">" : " "}</span>
-              <PieceMark id={asset.id} />
-              <span className="id">{padId(asset.tokenId)}</span>
-              <span className="text-dim">
-                {piece(asset.id)?.form}
-                {left > 0 ? ` · key ${left}` : ""}
-                {idle ? " · idle" : ""}
-              </span>
-              {cool > 0 ? <span className="text-accent">cool {cool}</span> : null}
-            </button>
-            <button type="button" className={cx("act is-small", left > 0 && "is-on")} disabled={cool > 0 || pending} onClick={() => void openKeyOf(asset.id)}>
-              key
-            </button>
-            <button type="button" className="act is-small" onClick={() => selectDetail(asset.id)}>
-              info
-            </button>
-          </div>
-        );
-      })}
-
-      <p className="legend mt-4 mb-0">encoder · hides the line</p>
-      {encoders.map((asset) => {
-        const on = asset.id === encoderId;
-        const cool = cooling(registry, asset.id, block);
-        const idle = registry.idles.some((offer) => offer.assetId === asset.id);
-        return (
-          <div key={asset.id} className="pick-line">
-            <button type="button" className={cx("pick-row", on && "is-on")} aria-pressed={on} onClick={() => setEncoderId(asset.id)}>
-              <span className="pick">{on ? ">" : " "}</span>
-              <PieceMark id={asset.id} />
-              <span className="id">{padId(asset.tokenId)}</span>
-              <span className="text-dim">
-                {piece(asset.id)?.dialect}
-                {idle ? " · idle" : ""}
-              </span>
-              {cool > 0 ? <span className="text-accent">cool {cool}</span> : null}
-            </button>
-            <button type="button" className="act is-small" onClick={() => selectDetail(asset.id)}>
-              info
-            </button>
-          </div>
-        );
-      })}
 
       <p className="legend mt-5 mb-1">mode</p>
       <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="mode">
@@ -303,15 +327,42 @@ export function Terminal() {
           </button>
         ))}
       </div>
+      <p className="mt-2 mb-0 text-sm text-dim">{MODES.find((item) => item.id === mode)!.text}</p>
+
+      {mode === "answer" ? (
+        <div className="mode-box">
+          <p className="legend m-0">openings waiting for an answer</p>
+          {answerable.length === 0 ? <p className="m-0 text-dim">none right now.</p> : null}
+          <ul className="m-0 list-none p-0">
+            {answerable.map((item) => {
+              const on = item.id === target?.id;
+              return (
+                <li key={item.id} className="pick-line">
+                  <button type="button" className={cx("pick-row", on && "is-on")} aria-pressed={on} onClick={() => setAnswerTarget(item.id)}>
+                    <span className="pick">{on ? ">" : " "}</span>
+                    <Tok id={item.characterId} mine={registry.assets.some((asset) => asset.id === item.characterId && asset.owner === wallet)} />
+                    <span className="text-dim truncate">
+                      brings <PieceMark id={item.baseId ?? item.encoderId} /> · needs {item.baseId ? "encoder" : "base"}
+                    </span>
+                    <span className="text-cyan">{formatLeft(item.deadline, unix(now))}</span>
+                  </button>
+                  <button type="button" className="act is-small" onClick={() => openTalk(item.id)}>
+                    talk
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : null}
+
+      {section("base")}
+      {section("encoder")}
 
       {mode === "open-base" || mode === "open-encoder" ? (
         <div className="mode-box">
-          <p className="m-0 text-dim">
-            {padId(speaker?.tokenId ?? 0)} speaks and brings {mode === "open-base" ? `base ${padId(piece(baseId)?.tokenId ?? 0)}` : `encoder ${padId(piece(encoderId)?.tokenId ?? 0)}`}. the{" "}
-            {mode === "open-base" ? "encoder" : "base"} slot stays empty: whoever answers fills it. {mode === "open-encoder" ? "until a base joins, the line is sealed." : "until an encoder joins, the line is not encoded."}
-          </p>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <span className="text-dim">window</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-dim">waits up to</span>
             {WINDOWS.map((item) => (
               <button key={item.seconds} type="button" className={cx("act is-small", seconds === item.seconds && "is-on")} onClick={() => setSeconds(item.seconds)}>
                 {item.label}
@@ -330,83 +381,12 @@ export function Terminal() {
         </div>
       ) : null}
 
-      {mode === "complete" ? (
-        <div className="mode-box">
-          <p className="m-0 text-dim">character + base + encoder in one signature. it closes at once, 1 point each. pieces you do not hold must be idle.</p>
-          <div className="mt-2 grid gap-2 sm:grid-cols-2">
-            <label className="field">
-              <span>base</span>
-              <select value={cBase} onChange={(event) => setCompleteBase(event.target.value)}>
-                {completeBases.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="field">
-              <span>encoder</span>
-              <select value={cEncoder} onChange={(event) => setCompleteEncoder(event.target.value)}>
-                {completeEncoders.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-        </div>
-      ) : null}
-
-      {mode === "answer" ? (
-        <div className="mode-box">
-          {answerable.length === 0 ? (
-            <p className="m-0 text-dim">no opening waits for an answer right now.</p>
-          ) : (
-            <ul className="m-0 list-none p-0">
-              {answerable.map((item) => {
-                const on = item.id === target?.id;
-                return (
-                  <li key={item.id}>
-                    <button type="button" className={cx("pick-row", on && "is-on")} aria-pressed={on} onClick={() => setAnswerTarget(item.id)}>
-                      <span className="pick">{on ? ">" : " "}</span>
-                      <Tok id={item.characterId} mine={mine.some((asset) => asset.id === item.characterId)} />
-                      <span className="text-dim">
-                        brings <PieceMark id={item.baseId ?? item.encoderId} /> {padId(piece(item.baseId ?? item.encoderId ?? "")?.tokenId ?? 0)} · needs {item.baseId ? "encoder" : "base"}
-                      </span>
-                      <span className="text-cyan">{formatLeft(item.deadline, unix(now))}</span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-          {target && targetEmpty ? (
-            <div className="mt-2 flex flex-wrap items-end gap-2">
-              <label className="field grow">
-                <span>{targetEmpty} for the empty slot</span>
-                <select value={aPiece} onChange={(event) => setAnswerPiece(event.target.value)}>
-                  {answerPieces.map((item) => (
-                    <option key={item.id || "draw"} value={item.id}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button type="button" className="act is-small" onClick={() => openTalk(target.id)}>
-                talk
-              </button>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-
-      <p className="mt-4 mb-3">
+      <p className="mt-5 mb-3">
         <span className="text-dim">{"> "}</span>
         <span className="sig">{draft}</span>
         <span className="caret">_</span>
         <span className="ml-3 text-dim text-sm">
-          {Array.from(draft).length}/{MAX_GLYPHS}
+          {Array.from(draft).length}/{MAX_GLYPHS} glyphs of {padId(speaker?.tokenId ?? 0)}
         </span>
       </p>
 
@@ -439,12 +419,13 @@ export function Terminal() {
           {busy ? "signing…" : "sign + send"}
         </button>
         {mouthCool > 0 ? <span className="text-accent">{padId(speaker?.tokenId ?? 0)} cools down {mouthCool}</span> : null}
-        {coolingAttached > 0 ? <span className="text-accent">piece cools down {coolingAttached}</span> : null}
+        {attachedCool > 0 ? <span className="text-accent">{padId(piece(attached!)?.tokenId ?? 0)} cools down {attachedCool}</span> : null}
         {awaiting ? <span className="text-cyan">{answerer === "mine" && other ? `${padId(other.tokenId)} answers…` : "the network answers…"}</span> : null}
       </div>
+      <Note scope="terminal" />
 
       <div className="private">
-        <p className="m-0 text-dim">read only here</p>
+        <p className="m-0 text-dim">read only here · plaintext of your talks while a key is open</p>
         {readConvs.length > 0 ? (
           <ul className="mt-2 mb-0 list-none p-0">
             {readConvs.map((convId) => (

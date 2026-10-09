@@ -503,10 +503,15 @@
 }
 
 .note {
-  margin: 0;
-  border-bottom: 1px solid var(--color-line);
-  padding: 0.6rem 1rem;
+  margin: 0.75rem 0 0;
+  border-left: 2px solid var(--color-cyan);
+  padding: 0.35rem 0.6rem;
   color: var(--color-cyan);
+  background: var(--color-raised);
+}
+
+.note.is-error {
+  border-left-color: var(--color-you);
 }
 
 .note.is-error {
@@ -661,7 +666,7 @@ button.tok:hover {
 
 .drawer {
   position: fixed;
-  z-index: 30;
+  z-index: 45;
   inset: auto 0 0 0;
   max-height: 70dvh;
   overflow-y: auto;
@@ -879,4 +884,179 @@ button.tok:hover {
 @media (max-width: 40rem) {
   .log-row { grid-template-columns: 4.8rem 5.2rem minmax(0, 1fr); }
   .log-row > :last-child { display: none; }
+}
+
+.guide {
+  border-bottom: 1px solid var(--color-line);
+}
+
+.guide .intro {
+  border-bottom: 0;
+  padding-top: 0;
+}
+
+.guide-bar {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  width: 100%;
+  min-height: 2.6rem;
+  padding: 0.4rem 1rem;
+  background: transparent;
+  border: 0;
+  color: var(--color-muted);
+  font: inherit;
+  text-align: left;
+}
+
+.guide-bar:hover,
+.guide-bar:hover .guide-toggle {
+  color: var(--color-ink);
+}
+
+.guide-toggle {
+  margin-left: auto;
+  color: var(--color-cyan);
+}
+
+.talk-window {
+  position: absolute;
+  inset: 0.75rem;
+  overflow-y: auto;
+  background: var(--color-field);
+  border: 1px solid var(--color-accent);
+  padding: 1rem;
+}
+
+@media (min-width: 48rem) {
+  .talk-window {
+    inset: 3rem auto auto 50%;
+    transform: translateX(-50%);
+    width: min(46rem, calc(100vw - 2rem));
+    max-height: calc(100dvh - 6rem);
+  }
+}
+
+.cast {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0.9rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cast-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+  border: 1px solid var(--color-line);
+  padding: 0.4rem;
+}
+
+.cast-tile.is-mine {
+  border-color: var(--color-you);
+}
+
+.cast-tile.is-empty {
+  border-style: dashed;
+}
+
+.cast-role {
+  color: var(--color-dim);
+  font-size: 0.75rem;
+}
+
+.cast-art {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  padding: 0;
+  border: 0;
+  background: #ededed;
+}
+
+.cast-art img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.cast-blank {
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 1px dashed var(--color-line);
+  color: var(--color-edge);
+}
+
+.cast-id,
+.cast-holder {
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cast-holder {
+  color: var(--color-dim);
+}
+
+.act-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
+.slot {
+  margin-top: 1rem;
+}
+
+.slot-empty,
+.slot-fixed {
+  margin: 0.2rem 0 0;
+  min-height: 2.2rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding-left: 1.4rem;
+}
+
+.slot-empty {
+  color: var(--color-edge);
+}
+
+.slot-hint {
+  margin: 0.25rem 0 0;
+  color: var(--color-dim);
+  font-size: 0.78rem;
+}
+
+.pager {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.log-row.is-you,
+.log-row.is-you span {
+  color: var(--color-you);
+}
+
+.log-row.is-you {
+  box-shadow: inset 2px 0 0 var(--color-you);
+}
+
+.face figure {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+@media (max-width: 40rem) {
+  .cast {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
