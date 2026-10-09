@@ -32,6 +32,9 @@ export type PendingDraw = {
   requestedAt: number;
 };
 
+/** Who put a base or an encoder into a talk. */
+export type Bringer = "opener" | "responder" | "idle" | "draw" | "";
+
 /** An opening (targeted) or a complete offer. Both carry the lines that were spoken. */
 export type Conversation = {
   id: string;
@@ -48,6 +51,8 @@ export type Conversation = {
   openedBlock: number;
   closureId: string | null;
   draw: PendingDraw | null;
+  /** Both characters share one base and one encoder: this says who brought each. */
+  brought?: { base: Bringer; encoder: Bringer };
 };
 
 /** One line on the wall. Plaintext stays in this client; the wall shows the ciphertext only. */

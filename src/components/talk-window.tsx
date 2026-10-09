@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { padId, piece } from "@/lib/trace/catalog";
 import { dialectMark, formMark } from "@/lib/trace/marks";
-import { canRead, conversationLines, conversationOf, walletLabel } from "@/lib/protocol/derive";
+import { broughtBy, canRead, conversationLines, conversationOf, walletLabel } from "@/lib/protocol/derive";
 import { blockAt, keyLeft, unix } from "@/lib/protocol/relayer";
 import type { Closure, Conversation, Registry } from "@/lib/protocol/types";
 import { exportTalkPng } from "@/lib/export-talk";
@@ -12,14 +12,14 @@ import { lineCipher } from "./wall";
 import { Note } from "./help";
 import { Tok, cx, formatLeft } from "./common";
 
-type Slot = { role: string; id: string | null; empty: string };
+type Slot = { role: string; id: string | null; empty: string; by: string };
 
 export function slotsOf(conversation: Conversation): Slot[] {
   return [
-    { role: "opens", id: conversation.characterId, empty: "" },
-    { role: "answers", id: conversation.responderId, empty: conversation.kind === "complete" ? "nobody · complete" : "waiting" },
-    { role: "base", id: conversation.baseId, empty: "empty slot" },
-    { role: "encoder", id: conversation.encoderId, empty: "empty slot" },
+    { role: "opens", id: conversation.characterId, empty: "", by: "" },
+    { role: "answers", id: conversation.responderId, empty: "waiting", by: "" },
+    { role: "base", id: conversation.baseId, empty: "empty slot", by: broughtBy(conversation, "base") },
+    { role: "encoder", id: conversation.encoderId, empty: "empty slot", by: broughtBy(conversation, "encoder") },
   ];
 }
 
@@ -96,7 +96,7 @@ export function TalkWindow() {
         <p className="mt-2 mb-0">
           {conversation.status === "open" ? (
             <span className="text-cyan">
-              open · {formatLeft(conversation.deadline, unix(now))} left · missing {empty}
+              open · {formatLeft(conversation.deadline, unix(now))} left · {conversation.baseId && conversation.encoderId ? "waiting for a character" : `missing ${empty}`}
             </span>
           ) : conversation.status === "expired" ? (
             <span className="text-dim">expired · nobody answered in time · 0 points</span>
@@ -140,10 +140,12 @@ export function TalkWindow() {
                     {holder === wallet ? "you" : handle ? `@${handle}` : walletLabel(registry, holder)}
                   </span>
                 ) : null}
+                {slot.by ? <span className="cast-holder">{slot.by}</span> : null}
               </li>
             );
           })}
         </ul>
+        <p className="mt-2 mb-0 text-sm text-dim">both characters speak through the same pair: the encoder hides every line, the base keys the whole talk.</p>
 
         {conversation.draw ? (
           <p className="mt-3 mb-0 flex flex-wrap items-center gap-3">

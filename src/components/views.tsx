@@ -70,9 +70,13 @@ function Graph() {
     if (!id) {
       setRole("");
       setNum("");
+      setQuery("");
     } else if (id.startsWith("w:")) {
       setRole("wallet");
-      setNum(id);
+      setNum("");
+      const current = useApp.getState().registry;
+      const address = id.slice(2);
+      setQuery(current?.handles[address] ? `@${current.handles[address]}` : (current?.labels[address] ?? address));
     } else {
       setRole(piece(id)?.role ?? "");
       setNum(String(piece(id)?.tokenId ?? ""));
@@ -82,6 +86,7 @@ function Graph() {
   const pickRole = (next: FocusRole) => {
     setRole(next);
     setNum("");
+    setQuery("");
     setFocus("");
     setPage(0);
     selectDetail(null);
@@ -99,6 +104,30 @@ function Graph() {
     }
   };
   const wallets = graph.nodes.filter((node) => node.kind === "wallet");
+  const [query, setQuery] = useState("");
+  const matchesOf = (text: string) => {
+    const needle = text.trim().toLowerCase().replace(/^@/, "");
+    if (!needle) return [];
+    return wallets
+      .filter((node) => {
+        const address = node.address ?? "";
+        const handle = (registry.handles[address] ?? "").toLowerCase();
+        return address.includes(needle) || node.label.toLowerCase().includes(needle) || handle.includes(needle) || (address === wallet && "you".startsWith(needle));
+      })
+      .slice(0, 8);
+  };
+  const matches = matchesOf(query);
+  const search = (text: string) => {
+    setQuery(text);
+    setPage(0);
+    const found = matchesOf(text);
+    if (found.length === 1) {
+      setFocus(found[0]!.id);
+      selectDetail(found[0]!.id);
+    } else {
+      setFocus("");
+    }
+  };
 
   const rows = [...registry.log].reverse().filter((row) => {
     if (!focus) return true;
@@ -129,16 +158,9 @@ function Graph() {
           </label>
         ) : null}
         {role === "wallet" ? (
-          <label className="field">
-            <span>holder</span>
-            <select value={focus} onChange={(event) => apply(event.target.value || null)}>
-              <option value="">pick one</option>
-              {wallets.map((node) => (
-                <option key={node.id} value={node.id}>
-                  {node.address === wallet ? "my wallet" : node.label}
-                </option>
-              ))}
-            </select>
+          <label className="field grow">
+            <span>holder · address, name, or @handle</span>
+            <input value={query} spellCheck={false} autoComplete="off" autoFocus placeholder="0x…, North Atelier, @handle" onChange={(event) => search(event.target.value)} />
           </label>
         ) : null}
         {focus ? (
@@ -147,6 +169,22 @@ function Graph() {
           </button>
         ) : null}
       </div>
+      {role === "wallet" && query && !known ? (
+        <ul className="matches">
+          {matches.length === 0 ? <li className="text-dim">no holder matches “{query}”.</li> : null}
+          {matches.map((node) => (
+            <li key={node.id}>
+              <button type="button" className="link-btn" onClick={() => apply(node.id)}>
+                {node.address === wallet ? "you" : node.label}
+              </button>{" "}
+              <span className="text-dim">
+                {registry.handles[node.address!] ? `@${registry.handles[node.address!]} · ` : ""}
+                {node.address}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
       <p className="mt-2 mb-0 text-sm text-dim">
         {known
           ? "its neighbors stay lit and the log lists only its transactions. click empty space to see the whole network."

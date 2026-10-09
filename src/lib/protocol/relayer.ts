@@ -343,6 +343,7 @@ export async function settleDraw(registry: Registry, convId: string, ms: number,
     const base = empty === "base" ? drawn : mustAsset(registry, conversation.baseId!);
     const encoder = empty === "encoder" ? drawn : mustAsset(registry, conversation.encoderId!);
     distinct([conversation.characterId, responder.id, base.id, encoder.id]);
+    conversation.brought = { ...(conversation.brought ?? { base: "", encoder: "" }), [empty]: "draw" };
     writeClosure(registry, { conversation, responder, base, encoder, drawSeed: seed, by: "relayer", ms });
     return { note: `Callback included. ${empty === "base" ? "Base" : "Encoder"} #${drawn.tokenId} drawn from the idle pool.`, refId: convId };
   });
@@ -503,6 +504,7 @@ export async function submitOpen(
       openedBlock: block,
       closureId: null,
       draw: null,
+      brought: { base: input.base ? "opener" : "", encoder: input.encoder ? "opener" : "" },
     };
     registry.conversations.push(conversation);
     addLine(registry, { convId: id, speakerId: character.id, replyTo: null, plaintext: input.plaintext, block });
@@ -572,6 +574,7 @@ export async function submitRespond(
       return { note: "Response included. The relayer draws the missing piece from the idle pool: wait for the callback.", refId: conversation.id };
     }
     const chosen = await authorizePiece(registry, supplied, empty, recovered, responder.id, ms);
+    conversation.brought = { ...(conversation.brought ?? { base: "", encoder: "" }), [empty]: chosen.owner === recovered ? "responder" : "idle" };
     const base = empty === "base" ? chosen : mustAsset(registry, conversation.baseId!);
     const encoder = empty === "encoder" ? chosen : mustAsset(registry, conversation.encoderId!);
     distinct([conversation.characterId, responder.id, base.id, encoder.id]);

@@ -1,6 +1,7 @@
 import { padId, piece } from "@/lib/trace/catalog";
 import { decayed, dialectMark, formMark, visualCipher } from "@/lib/trace/marks";
 import type { Closure, Conversation, Line, Registry } from "@/lib/protocol/types";
+import { broughtBy } from "@/lib/protocol/derive";
 
 const WIDTH = 760;
 const PAD = 32;
@@ -56,7 +57,7 @@ export async function exportTalkPng(registry: Registry, conversation: Conversati
 
   const tile = (WIDTH - PAD * 2 - 3 * 16) / 4;
   const castTop = 100;
-  const castHeight = 22 + tile + 48;
+  const castHeight = 22 + tile + 66;
   const header = castTop + castHeight + 24;
   const step = 96;
   const height = header + lines.length * step + 44;
@@ -83,9 +84,9 @@ export async function exportTalkPng(registry: Registry, conversation: Conversati
   text("traceformers@terminal:~$ talk", PAD, 38, CYAN);
   const state =
     conversation.status === "closed" && closure
-      ? `closed · block ${closure.block} · ${conversation.kind} · ${closure.pointsInitiator}/${closure.pointsResponder}/${closure.pointsBase}/${closure.pointsEncoder} pts`
+      ? `closed at block ${closure.block} · ${conversation.kind === "complete" ? "complete" : "targeted"}`
       : conversation.status === "expired"
-        ? "expired · 0 points"
+        ? "expired"
         : "open · waiting for an answer";
   text(state, PAD, 66, conversation.status === "closed" ? ACCENT : DIM, 14);
 
@@ -110,6 +111,8 @@ export async function exportTalkPng(registry: Registry, conversation: Conversati
       const color = art.dialect === "binary" || art.form === "inverted" ? CYAN : art.dialect === "punched" || art.form === "blink" ? ACCENT : INK;
       text(fit(`${padId(art.tokenId)} ${mark}`, tile, 13), x, top + tile + 18, color, 13);
       text(fit(holderOf(registry, closure, art.id), tile, 12), x, top + tile + 36, MUTED, 12);
+      const by = slot.role === "base" || slot.role === "encoder" ? broughtBy(conversation, slot.role) : "";
+      if (by) text(fit(by, tile, 11), x, top + tile + 54, DIM, 11);
     }
   });
 

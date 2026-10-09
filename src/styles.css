@@ -1069,3 +1069,15 @@ button.tok:hover {
   align-self: center;
   flex: none;
 }
+
+.matches {
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.matches li {
+  min-height: 1.9rem;
+}

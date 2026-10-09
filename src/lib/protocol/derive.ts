@@ -134,7 +134,7 @@ export function ranksForRole(registry: Registry, role: Role): RankRow[] {
       return {
         id: asset.id,
         label: padId(asset.tokenId),
-        sub: `${piece(asset.id)?.dialect ?? piece(asset.id)?.form ?? "decoded"} · ${walletLabel(registry, asset.owner)}`,
+        sub: `${role === "character" ? "" : `${piece(asset.id)?.dialect ?? piece(asset.id)?.form} · `}held by ${registry.handles[asset.owner] ? `@${registry.handles[asset.owner]}` : walletLabel(registry, asset.owner)}`,
         points: score.points,
         closures: score.closures,
         tie: asset.tokenId,
@@ -154,7 +154,7 @@ export function ranksForWallets(registry: Registry, role: Role): RankRow[] {
     const current = buckets.get(asset.owner) ?? {
       id: asset.owner,
       label: walletLabel(registry, asset.owner),
-      sub: "held now",
+      sub: "",
       points: 0,
       closures: 0,
       tie: 0,
@@ -163,6 +163,10 @@ export function ranksForWallets(registry: Registry, role: Role): RankRow[] {
     current.closures += score.closures;
     current.tie += 1;
     buckets.set(asset.owner, current);
+  }
+  for (const row of buckets.values()) {
+    const handle = registry.handles[row.id];
+    row.sub = `${handle ? `@${handle} · ` : ""}sum of the ${row.tie} ${role}${row.tie === 1 ? "" : "s"} it holds now`;
   }
   return [...buckets.values()].sort((a, b) => {
     if (b.points !== a.points) return b.points - a.points;
@@ -257,4 +261,15 @@ export function tally(lines: Line[]): Array<{ glyph: string; n: number }> {
     .map(([glyph, n]) => ({ glyph, n }))
     .sort((a, b) => b.n - a.n || (a.glyph < b.glyph ? -1 : 1))
     .slice(0, 6);
+}
+
+/** Who put a base or an encoder into the talk, in words. */
+export function broughtBy(conversation: Conversation, role: "base" | "encoder"): string {
+  const who = conversation.brought?.[role];
+  const tok = (id: string | null) => padId(piece(id ?? "")?.tokenId ?? 0);
+  if (who === "opener") return `brought by ${tok(conversation.characterId)}`;
+  if (who === "responder") return `brought by ${tok(conversation.responderId)}`;
+  if (who === "idle") return `idle piece, taken by ${tok(conversation.responderId)}`;
+  if (who === "draw") return "drawn from the idle pool";
+  return "";
 }
