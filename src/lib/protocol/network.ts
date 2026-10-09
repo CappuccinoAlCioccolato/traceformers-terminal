@@ -2,22 +2,23 @@ import { keccak256, stringToHex, type Hex } from "viem";
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { PIECES, piece, pieceId, type Role } from "@/lib/trace/catalog";
 import { answer, mulberry32, phrase } from "@/lib/trace/portrait";
-import { DOMAIN, idleSpec, lineCommit, openSpec, respondSpec, type TypedSpec } from "./domain";
+import { DOMAIN, answerSpec, idleSpec, joinSpec, lineCommit, openSpec, type TypedSpec } from "./domain";
 import {
   BLOCK_MS,
-  DRAW_MS,
   blockAt,
   cooling,
-  eligibleIdle,
+  emptySeats,
   expireDue,
+  fillFromPool,
   nextNonce,
-  settleRipe,
+  seatProblem,
+  submitAnswer,
   submitIdle,
+  submitJoin,
   submitOpen,
-  submitRespond,
   unix,
 } from "./relayer";
-import type { Conversation, Registry, Result } from "./types";
+import type { Conversation, Registry, Result, SideName, Slot } from "./types";
 
 // Six holders that live in this registry. Their keys are derived from public labels: they are demo
 // wallets, not secrets. Their signatures still go through the same EIP-712 checks as yours.
@@ -70,7 +71,7 @@ function tokenOf(id: string): number {
 }
 
 // ---------------------------------------------------------------------------------------------------------
-// Acts. Each one signs as the holder of the character and goes through the relayer.
+// Acts. Each one signs as the holder of the piece and goes through the relayer.
 
 async function npcIdle(registry: Registry, assetId: string, ms: number, opts: { maxUses?: number; expiry?: number; allowed?: string } = {}) {
   const npc = npcFor(registry, assetId);
@@ -87,15 +88,15 @@ async function npcIdle(registry: Registry, assetId: string, ms: number, opts: { 
   await submitIdle(registry, { ...message, signature }, ms);
 }
 
-/** A network character opens a talk with one piece (targeted) or with both (complete). */
-export async function npcOpen(registry: Registry, characterId: string, attachedIds: string[], minutes: number, ms: number, salt: number): Promise<Result> {
+/** A network character opens a talk, bringing its own base and encoder or leaving them to the waiting room. */
+export async function npcOpen(registry: Registry, characterId: string, bring: { base?: string; encoder?: string }, minutes: number, ms: number, salt: number): Promise<Result> {
   const npc = npcFor(registry, characterId);
   if (!npc) return { ok: false, error: "Not a network character." };
   const plaintext = phrase(tokenOf(characterId), 3 + (salt % 3), salt);
   const message = {
     character: characterId,
-    base: attachedIds.find((id) => piece(id)?.role === "base") ?? "",
-    encoder: attachedIds.find((id) => piece(id)?.role === "encoder") ?? "",
+    base: bring.base ?? "",
+    encoder: bring.encoder ?? "",
     deadline: unix(ms) + minutes * 60,
     nonce: nextNonce(registry, characterId, "open"),
   };
@@ -103,45 +104,56 @@ export async function npcOpen(registry: Registry, characterId: string, attachedI
   return submitOpen(registry, { ...message, plaintext, signature }, ms);
 }
 
-/** A network character answers an opening. `piece` fills the empty slot (own or idle), or "" for a draw or a complete talk. */
-export async function npcRespond(registry: Registry, conversation: Conversation, responderId: string, pieceIdOrDraw: string, ms: number): Promise<Result> {
-  const npc = npcFor(registry, responderId);
+/** A network character answers a talk, citing its line with glyphs of its own art. */
+export async function npcAnswer(registry: Registry, conversation: Conversation, characterId: string, bring: { base?: string; encoder?: string }, ms: number): Promise<Result> {
+  const npc = npcFor(registry, characterId);
   if (!npc) return { ok: false, error: "Not a network character." };
-  const opening = registry.lines.find((line) => line.convId === conversation.id && !line.replyTo);
-  const plaintext = answer(opening?.plaintext ?? "█", tokenOf(responderId)).slice(0, 6);
-  const empty: Role | null = conversation.baseId && conversation.encoderId ? null : conversation.baseId ? "encoder" : "base";
-  const message = {
-    openId: conversation.id,
-    character: responderId,
-    base: empty === "base" ? pieceIdOrDraw : "",
-    encoder: empty === "encoder" ? pieceIdOrDraw : "",
-  };
-  const signature = await sign(npc, respondSpec({ ...message, line: lineCommit(plaintext) }));
-  return submitRespond(registry, { ...message, plaintext, signature }, ms);
+  const opening = registry.lines.find((line) => line.convId === conversation.id && line.side === "talk");
+  const plaintext = answer(opening?.plaintext ?? "█", tokenOf(characterId)).slice(0, 6);
+  const message = { openId: conversation.id, character: characterId, base: bring.base ?? "", encoder: bring.encoder ?? "" };
+  const signature = await sign(npc, answerSpec({ ...message, line: lineCommit(plaintext) }));
+  return submitAnswer(registry, { ...message, plaintext, signature }, ms);
+}
+
+async function npcJoin(registry: Registry, conversation: Conversation, side: SideName, assetId: string, ms: number): Promise<Result> {
+  const npc = npcFor(registry, assetId);
+  if (!npc) return { ok: false, error: "Not a network piece." };
+  const message = { openId: conversation.id, side, nft: assetId, nonce: nextNonce(registry, assetId, "join") };
+  const signature = await sign(npc, joinSpec(message));
+  return submitJoin(registry, { ...message, signature }, ms);
+}
+
+function fits(registry: Registry, conversation: Conversation, side: SideName, slot: Slot, assetId: string, block: number): boolean {
+  const asset = registry.assets.find((item) => item.id === assetId);
+  return Boolean(asset && !seatProblem(registry, conversation, side, slot, asset, block));
 }
 
 /**
- * Pick a network character, held by another wallet than the opener's, and the piece it brings.
- * A complete talk needs no piece. A targeted one prefers the responder's own piece, then an idle one, then a draw.
+ * A network character, held by another wallet than the talk's, ready to answer.
+ * `full` brings its own base and a same-dialect encoder when it has them; otherwise it may leave seats to the room.
  */
-export function chooseResponder(registry: Registry, conversation: Conversation, ms: number, rnd: () => number = Math.random) {
+export function chooseAnswer(registry: Registry, conversation: Conversation, ms: number, rnd: () => number = Math.random, full = false) {
   const block = blockAt(registry, ms);
-  const empty: Role | null = conversation.baseId && conversation.encoderId ? null : conversation.baseId ? "encoder" : "base";
-  const taken = [conversation.characterId, conversation.baseId, conversation.encoderId].filter((id): id is string => Boolean(id));
-  const candidates = NPCS.filter((npc) => npc.account.address.toLowerCase() !== conversation.opener)
+  const talkHolder = conversation.talk.character?.holder;
+  const candidates = NPCS.filter((npc) => npc.account.address.toLowerCase() !== talkHolder)
     .flatMap((npc) => held(registry, npc, "character", block).map((id) => ({ npc, id })))
-    .filter((item) => !taken.includes(item.id));
+    .filter((item) => fits(registry, conversation, "answer", "character", item.id, block));
   if (!candidates.length) return null;
   const pick = candidates[Math.floor(rnd() * candidates.length)]!;
-  if (!empty) return { responderId: pick.id, pieceId: "" };
-  const own = held(registry, pick.npc, empty, block).filter((id) => !taken.includes(id));
-  const pool = eligibleIdle(registry, empty, [...taken, pick.id], pick.id, ms);
-  const roll = rnd();
-  if (own.length && (roll < 0.6 || !pool.length)) return { responderId: pick.id, pieceId: own[Math.floor(rnd() * own.length)]! };
-  if (pool.length && roll < 0.85) return { responderId: pick.id, pieceId: pool[Math.floor(rnd() * pool.length)]!.assetId };
-  if (pool.length) return { responderId: pick.id, pieceId: "" };
-  // Every own piece of that role is cooling and the pool is empty: try another holder next block.
-  return null;
+  const bases = held(registry, pick.npc, "base", block).filter((id) => fits(registry, conversation, "answer", "base", id, block));
+  const encoders = held(registry, pick.npc, "encoder", block).filter((id) => piece(id)?.dialect === conversation.dialect && fits(registry, conversation, "answer", "encoder", id, block));
+  return {
+    characterId: pick.id,
+    base: bases.length && (full || rnd() < 0.5) ? bases[0] : undefined,
+    encoder: encoders.length && (full || rnd() < 0.5) ? encoders[0] : undefined,
+  };
+}
+
+/** A network piece that fits an empty seat, from any holder. */
+function chooseJoin(registry: Registry, conversation: Conversation, side: SideName, slot: Slot, ms: number, rnd: () => number) {
+  const block = blockAt(registry, ms);
+  const options = NPCS.flatMap((npc) => held(registry, npc, slot, block)).filter((id) => fits(registry, conversation, side, slot, id, block));
+  return options.length ? options[Math.floor(rnd() * options.length)]! : null;
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -150,7 +162,7 @@ export function chooseResponder(registry: Registry, conversation: Conversation, 
 export async function createGenesis(now: number): Promise<Registry> {
   const BACK = 60;
   const registry: Registry = {
-    version: 1,
+    version: 3,
     epoch: now - BACK * BLOCK_MS,
     assets: PIECES.map((item) => ({ id: item.id, role: item.role, tokenId: item.tokenId, owner: "" })),
     idles: [],
@@ -178,15 +190,22 @@ export async function createGenesis(now: number): Promise<Registry> {
   }
   const at = (k: number) => registry.epoch + k * BLOCK_MS + 500;
   const conv = (id: string) => registry.conversations.find((item) => item.id === id)!;
-  const open = async (k: number, character: number, pieces: [Role, number][], minutes = 60) => {
-    const ids = pieces.map(([role, id]) => pieceId(role, id));
-    const result = await npcOpen(registry, pieceId("character", character), ids, minutes, at(k), k);
-    if (!result.ok) throw new Error(`genesis open: ${result.error}`);
+  const must = (result: Result, what: string) => {
+    if (!result.ok) throw new Error(`genesis ${what}: ${result.error}`);
+    return result;
+  };
+  const open = async (k: number, character: number, base: number, encoder: number, minutes = 60) => {
+    const result = must(
+      await npcOpen(registry, pieceId("character", character), { base: base ? pieceId("base", base) : undefined, encoder: encoder ? pieceId("encoder", encoder) : undefined }, minutes, at(k), k),
+      "open",
+    );
     return conv(result.refId!);
   };
-  const respond = async (k: number, conversation: Conversation, character: number, role: Role | null = null, attached = 0) => {
-    const result = await npcRespond(registry, conversation, pieceId("character", character), role ? pieceId(role, attached) : "", at(k));
-    if (!result.ok) throw new Error(`genesis respond: ${result.error}`);
+  const reply = async (k: number, conversation: Conversation, character: number, base: number, encoder: number) => {
+    must(await npcAnswer(registry, conversation, pieceId("character", character), { base: base ? pieceId("base", base) : undefined, encoder: encoder ? pieceId("encoder", encoder) : undefined }, at(k)), "answer");
+  };
+  const join = async (k: number, conversation: Conversation, side: SideName, role: "base" | "encoder", id: number) => {
+    must(await npcJoin(registry, conversation, side, pieceId(role, id), at(k)), "join");
   };
 
   await npcIdle(registry, "b-3", at(2));
@@ -196,54 +215,86 @@ export async function createGenesis(now: number): Promise<Registry> {
   await npcIdle(registry, "b-20", at(2), { maxUses: 2 });
   await npcIdle(registry, "e-123", at(2), { expiry: 1893456000 });
 
-  await respond(7, await open(6, 2, [["base", 1]]), 5, "encoder", 149);
-  await respond(11, await open(10, 7, [["encoder", 149]]), 4, "base", 6);
-  await respond(15, await open(14, 9, [["base", 10], ["encoder", 789]]), 14);
-  await respond(19, await open(18, 13, [["base", 16]]), 15);
-  await settleRipe(registry, at(19) + DRAW_MS + 1);
-  await respond(25, await open(24, 19, [["encoder", 163]]), 12, "base", 3);
-  await respond(29, await open(28, 2, [["encoder", 611]]), 14, "base", 11);
-  await respond(33, await open(32, 15, [["base", 17], ["encoder", 139]]), 7);
-  await respond(37, await open(36, 5, [["base", 8]]), 19, "encoder", 163);
-  await respond(41, await open(40, 12, [["base", 10]]), 13, "encoder", 150);
+  // Closed talks. Each side is seated by its character's holder, by other holders joining, or both.
+  const first = await open(6, 2, 1, 123);
+  await reply(7, first, 5, 3, 0);
+  await join(8, first, "answer", "encoder", 125);
+  const second = await open(10, 7, 8, 0);
+  await join(11, second, "talk", "encoder", 611);
+  await reply(12, second, 4, 6, 0);
+  await join(13, second, "answer", "encoder", 789);
+  const third = await open(14, 9, 10, 125);
+  await reply(15, third, 14, 16, 0);
+  await join(16, third, "answer", "encoder", 123);
+  const fourth = await open(18, 13, 0, 150);
+  await join(19, fourth, "talk", "base", 17);
+  await reply(20, fourth, 19, 20, 163);
+  const fifth = await open(24, 12, 10, 125);
+  await reply(25, fifth, 15, 17, 139);
+  const sixth = await open(30, 5, 0, 0);
+  await join(31, sixth, "talk", "base", 11);
+  await join(31, sixth, "talk", "encoder", 150);
+  await reply(33, sixth, 2, 1, 0);
+  await join(34, sixth, "answer", "encoder", 149);
 
-  await open(BACK - 4, 4, [["base", 1]], 90);
-  await open(BACK - 2, 19, [["encoder", 163]], 45);
+  // Still in the waiting room when you arrive: an answer without base and encoder, and a talk without encoder.
+  const waiting = await open(BACK - 8, 19, 20, 163, 45);
+  await reply(BACK - 4, waiting, 9, 0, 0);
+  await open(BACK - 3, 4, 6, 0, 90);
   registry.cursor = blockAt(registry, now);
   return registry;
 }
 
-/** How long, in blocks, an opening waits before the network answers it. */
+/** Blocks a seat waits before a network holder takes it, and before a network character answers. */
+const JOIN_AFTER = 4;
 const ANSWER_AFTER = 3;
 
-/** One block of network life: draw callbacks, new openings, and answers to every opening that waits. */
+/** One block of network life: pool fills, new talks, answers, and network pieces taking the seats nobody took. */
 export async function ambient(registry: Registry, block: number, ms: number): Promise<void> {
-  await settleRipe(registry, ms);
+  await fillFromPool(registry, ms);
   const rnd = mulberry32(block * 997);
-  const npcOpen_ = registry.conversations.filter((item) => item.status === "open" && isNpc(item.opener));
+  const open = registry.conversations.filter((item) => item.status === "open").sort((a, b) => a.deadline - b.deadline);
+  const npcOpenCount = open.filter((item) => isNpc(item.talk.character?.holder ?? "")).length;
 
-  if (block % 6 === 0 && npcOpen_.length < 3) {
+  if (block % 6 === 0 && npcOpenCount < 3) {
     const npc = NPCS[Math.floor(rnd() * NPCS.length)]!;
     const characters = held(registry, npc, "character", block);
     const bases = held(registry, npc, "base", block);
     const encoders = held(registry, npc, "encoder", block);
-    const complete = block % 18 === 0 && bases.length > 0 && encoders.length > 0;
-    const role: Role = rnd() < 0.5 ? "base" : "encoder";
-    const attached = complete
-      ? [bases[Math.floor(rnd() * bases.length)]!, encoders[Math.floor(rnd() * encoders.length)]!]
-      : (role === "base" ? bases : encoders).slice(0, 1);
-    if (characters.length && attached.length) {
-      await npcOpen(registry, characters[Math.floor(rnd() * characters.length)]!, attached, 20 + Math.floor(rnd() * 70), ms, block);
+    if (characters.length) {
+      await npcOpen(
+        registry,
+        characters[Math.floor(rnd() * characters.length)]!,
+        { base: rnd() < 0.6 ? bases[0] : undefined, encoder: rnd() < 0.6 ? encoders[0] : undefined },
+        20 + Math.floor(rnd() * 70),
+        ms,
+        block,
+      );
     }
   }
 
-  // Every talk closes: the oldest opening that has waited long enough gets an answer, whoever opened it.
-  const waiting = registry.conversations
-    .filter((item) => item.status === "open" && !item.draw && block - item.openedBlock >= ANSWER_AFTER)
-    .sort((a, b) => a.deadline - b.deadline);
-  for (const target of waiting.slice(0, 2)) {
-    const choice = chooseResponder(registry, target, ms, rnd);
-    if (choice) await npcRespond(registry, target, choice.responderId, choice.pieceId, ms);
+  let acts = 0;
+  for (const conversation of open) {
+    if (acts >= 2 || conversation.status !== "open") break;
+    const waited = block - conversation.movedBlock;
+    const seats = emptySeats(conversation);
+    const needsAnswer = seats.some((item) => item.side === "answer" && item.slot === "character");
+    if (needsAnswer && waited >= ANSWER_AFTER) {
+      const choice = chooseAnswer(registry, conversation, ms, rnd);
+      if (choice) {
+        await npcAnswer(registry, conversation, choice.characterId, choice, ms);
+        acts += 1;
+        continue;
+      }
+    }
+    if (waited < JOIN_AFTER) continue;
+    const seatToFill = seats.find((item) => item.slot !== "character");
+    if (!seatToFill) continue;
+    const pieceToSeat = chooseJoin(registry, conversation, seatToFill.side, seatToFill.slot, ms, rnd);
+    if (pieceToSeat) {
+      await npcJoin(registry, conversation, seatToFill.side, pieceToSeat, ms);
+      acts += 1;
+    }
   }
   expireDue(registry, ms);
 

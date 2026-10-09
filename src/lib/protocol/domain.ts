@@ -17,15 +17,14 @@ export const MAX_OPEN_SECONDS = 7200;
 export const MIN_OPEN_SECONDS = 120;
 
 /**
- * targeted: the opener brought one piece and another holder answered with the other.
- * complete: the opener brought both pieces; another holder answered with a character only.
- * self: the answering character is held by the opener's own wallet. One holder talking to itself
- * never earns more than a complete talk would give it.
+ * Each side of a closed talk pays its pieces. The two characters earn 3 each, every base and encoder 1.
+ * When the answering character is held by the opener's own wallet, that wallet is talking to itself:
+ * the talk character earns 1 and the answer side earns nothing for that wallet.
  */
 export const POINTS = {
-  targeted: { initiator: 3, responder: 3, base: 1, encoder: 1 },
-  complete: { initiator: 1, responder: 1, base: 1, encoder: 1 },
-  self: { initiator: 1, responder: 0, base: 1, encoder: 1 },
+  character: 3,
+  piece: 1,
+  selfTalk: 1,
 } as const;
 
 export const linkTypes = {
@@ -64,13 +63,23 @@ export const openTypes = {
   ],
 } as const;
 
-export const respondTypes = {
-  Respond: [
+export const answerTypes = {
+  Answer: [
     { name: "openId", type: "string" },
     { name: "character", type: "string" },
     { name: "base", type: "string" },
     { name: "encoder", type: "string" },
     { name: "line", type: "bytes32" },
+  ],
+} as const;
+
+/** A base or encoder holder takes an empty seat on one side of a talk, from the waiting room. */
+export const joinTypes = {
+  Join: [
+    { name: "openId", type: "string" },
+    { name: "side", type: "string" },
+    { name: "nft", type: "string" },
+    { name: "nonce", type: "uint256" },
   ],
 } as const;
 
@@ -128,10 +137,16 @@ export const openSpec = (m: { character: string; base: string; encoder: string; 
   message: { ...m, deadline: BigInt(m.deadline), nonce: BigInt(m.nonce) },
 });
 
-export const respondSpec = (m: { openId: string; character: string; base: string; encoder: string; line: Hex }): TypedSpec => ({
-  types: respondTypes,
-  primaryType: "Respond",
+export const answerSpec = (m: { openId: string; character: string; base: string; encoder: string; line: Hex }): TypedSpec => ({
+  types: answerTypes,
+  primaryType: "Answer",
   message: m,
+});
+
+export const joinSpec = (m: { openId: string; side: string; nft: string; nonce: number }): TypedSpec => ({
+  types: joinTypes,
+  primaryType: "Join",
+  message: { ...m, nonce: BigInt(m.nonce) },
 });
 
 export const delegateSpec = (m: { nft: string; to: string; nonce: number }): TypedSpec => ({

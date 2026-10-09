@@ -1,7 +1,7 @@
 import { piece, padId, type Role } from "@/lib/trace/catalog";
 import { shortAddress } from "./domain";
 import { keyLeft } from "./relayer";
-import type { Asset, Closure, Conversation, Line, Registry } from "./types";
+import { SIDES, SLOTS, type Asset, type Closure, type Conversation, type Line, type Registry, type SideName, type Slot } from "./types";
 
 export type GraphKind = Role | "wallet";
 
@@ -38,25 +38,28 @@ export function walletLabel(registry: Registry, address: string): string {
   return registry.labels[address.toLowerCase()] ?? shortAddress(address);
 }
 
+/** Every seat of a closure, as side, slot, piece, holder at closure, and points. */
+export function seatsOf(closure: Closure): { side: SideName; slot: Slot; id: string; wallet: string; points: number }[] {
+  return SIDES.flatMap((side) =>
+    SLOTS.map((slot) => ({ side, slot, id: closure.pieces[side][slot], wallet: closure.wallets[side][slot], points: closure.points[side][slot] })),
+  );
+}
+
+export function pointsIn(nodeId: string, closure: Closure): number {
+  const address = nodeId.startsWith("w:") ? nodeId.slice(2) : null;
+  return seatsOf(closure)
+    .filter((seat) => (address ? seat.wallet === address : seat.id === nodeId))
+    .reduce((sum, seat) => sum + seat.points, 0);
+}
+
 export function pointsFor(asset: Asset, closures: Closure[]): { points: number; closures: number } {
   let points = 0;
   let n = 0;
   for (const closure of closures) {
-    if (asset.role === "character") {
-      if (closure.initiatorId === asset.id) {
-        points += closure.pointsInitiator;
-        n += 1;
-      } else if (closure.responderId === asset.id) {
-        points += closure.pointsResponder;
-        n += 1;
-      }
-    } else if (asset.role === "base" && closure.baseId === asset.id) {
-      points += closure.pointsBase;
-      n += 1;
-    } else if (asset.role === "encoder" && closure.encoderId === asset.id) {
-      points += closure.pointsEncoder;
-      n += 1;
-    }
+    const seats = seatsOf(closure).filter((seat) => seat.id === asset.id);
+    if (!seats.length) continue;
+    n += 1;
+    points += seats.reduce((sum, seat) => sum + seat.points, 0);
   }
   return { points, closures: n };
 }
@@ -77,23 +80,16 @@ export function buildGraph(registry: Registry): { nodes: GraphNode[]; edges: Gra
   };
 
   for (const closure of registry.closures) {
-    for (const id of [closure.initiatorId, closure.responderId, closure.baseId, closure.encoderId]) if (id) seen.add(id);
-    addEdge(closure.initiatorId, closure.baseId, "piece");
-    addEdge(closure.initiatorId, closure.encoderId, "piece");
-    if (closure.responderId) {
-      addEdge(closure.responderId, closure.baseId, "piece");
-      addEdge(closure.responderId, closure.encoderId, "piece");
-      addEdge(closure.initiatorId, closure.responderId, "reply");
+    for (const side of SIDES) {
+      const { character, base, encoder } = closure.pieces[side];
+      addEdge(character, base, "piece");
+      addEdge(character, encoder, "piece");
     }
-    const pairs: [string, string][] = [
-      [closure.initiatorId, closure.initiatorWallet],
-      [closure.baseId, closure.baseWallet],
-      [closure.encoderId, closure.encoderWallet],
-    ];
-    if (closure.responderId && closure.responderWallet) pairs.push([closure.responderId, closure.responderWallet]);
-    for (const [assetId, wallet] of pairs) {
-      wallets.add(wallet.toLowerCase());
-      addEdge(assetId, walletNode(wallet), "custody");
+    addEdge(closure.pieces.talk.character, closure.pieces.answer.character, "reply");
+    for (const seat of seatsOf(closure)) {
+      seen.add(seat.id);
+      wallets.add(seat.wallet);
+      addEdge(seat.id, walletNode(seat.wallet), "custody");
     }
   }
 
@@ -103,19 +99,10 @@ export function buildGraph(registry: Registry): { nodes: GraphNode[]; edges: Gra
     if (!asset) continue;
     const score = pointsFor(asset, registry.closures);
     const art = piece(id);
-    const sub = art?.dialect ?? art?.form ?? "decoded";
-    nodes.push({ id, kind: asset.role, label: padId(asset.tokenId), sub, points: score.points, closures: score.closures });
+    nodes.push({ id, kind: asset.role, label: padId(asset.tokenId), sub: art?.dialect ?? art?.form ?? "decoded", points: score.points, closures: score.closures });
   }
   for (const address of wallets) {
-    nodes.push({
-      id: walletNode(address),
-      kind: "wallet",
-      label: walletLabel(registry, address),
-      sub: shortAddress(address),
-      points: 0,
-      closures: 0,
-      address,
-    });
+    nodes.push({ id: walletNode(address), kind: "wallet", label: walletLabel(registry, address), sub: shortAddress(address), points: 0, closures: 0, address });
   }
   return { nodes, edges: [...edgeMap.values()] };
 }
@@ -126,19 +113,17 @@ function compareRank(a: RankRow, b: RankRow): number {
   return a.tie - b.tie;
 }
 
+function holderName(registry: Registry, address: string): string {
+  return registry.handles[address] ? `@${registry.handles[address]}` : walletLabel(registry, address);
+}
+
 export function ranksForRole(registry: Registry, role: Role): RankRow[] {
   return registry.assets
     .filter((asset) => asset.role === role && asset.owner)
     .map((asset) => {
       const score = pointsFor(asset, registry.closures);
-      return {
-        id: asset.id,
-        label: padId(asset.tokenId),
-        sub: `${role === "character" ? "" : `${piece(asset.id)?.dialect ?? piece(asset.id)?.form} · `}held by ${registry.handles[asset.owner] ? `@${registry.handles[asset.owner]}` : walletLabel(registry, asset.owner)}`,
-        points: score.points,
-        closures: score.closures,
-        tie: asset.tokenId,
-      };
+      const kind = role === "character" ? "" : `${piece(asset.id)?.dialect ?? piece(asset.id)?.form} · `;
+      return { id: asset.id, label: padId(asset.tokenId), sub: `${kind}held by ${holderName(registry, asset.owner)}`, points: score.points, closures: score.closures, tie: asset.tokenId };
     })
     .filter((row) => row.closures > 0)
     .sort(compareRank);
@@ -151,14 +136,7 @@ export function ranksForWallets(registry: Registry, role: Role): RankRow[] {
     if (asset.role !== role || !asset.owner) continue;
     const score = pointsFor(asset, registry.closures);
     if (score.closures === 0) continue;
-    const current = buckets.get(asset.owner) ?? {
-      id: asset.owner,
-      label: walletLabel(registry, asset.owner),
-      sub: "",
-      points: 0,
-      closures: 0,
-      tie: 0,
-    };
+    const current = buckets.get(asset.owner) ?? { id: asset.owner, label: walletLabel(registry, asset.owner), sub: "", points: 0, closures: 0, tie: 0 };
     current.points += score.points;
     current.closures += score.closures;
     current.tie += 1;
@@ -176,62 +154,26 @@ export function ranksForWallets(registry: Registry, role: Role): RankRow[] {
 }
 
 export function closuresTouching(registry: Registry, nodeId: string): Closure[] {
-  const rows = registry.closures.filter((closure) => {
-    if (nodeId.startsWith("w:")) {
-      const address = nodeId.slice(2);
-      return [closure.initiatorWallet, closure.responderWallet, closure.baseWallet, closure.encoderWallet].some(
-        (wallet) => wallet?.toLowerCase() === address,
-      );
-    }
-    return [closure.initiatorId, closure.responderId, closure.baseId, closure.encoderId].includes(nodeId);
-  });
-  return rows.sort((a, b) => b.block - a.block || b.at - a.at);
+  const address = nodeId.startsWith("w:") ? nodeId.slice(2) : null;
+  return registry.closures
+    .filter((closure) => seatsOf(closure).some((seat) => (address ? seat.wallet === address : seat.id === nodeId)))
+    .sort((a, b) => b.block - a.block || b.at - a.at);
 }
 
 export function roleInClosure(nodeId: string, closure: Closure): string {
-  if (nodeId.startsWith("w:")) {
-    const address = nodeId.slice(2);
-    const roles: string[] = [];
-    if (closure.initiatorWallet === address) roles.push("opening holder");
-    if (closure.responderWallet === address) roles.push("responding holder");
-    if (closure.baseWallet === address) roles.push("base holder");
-    if (closure.encoderWallet === address) roles.push("encoder holder");
-    return roles.join(" · ");
-  }
-  if (closure.initiatorId === nodeId) return "opened";
-  if (closure.responderId === nodeId) return "answered";
-  if (closure.baseId === nodeId) return "base";
-  if (closure.encoderId === nodeId) return "encoder";
-  return "";
-}
-
-export function pointsIn(nodeId: string, closure: Closure): number {
-  if (closure.initiatorId === nodeId) return closure.pointsInitiator;
-  if (closure.responderId === nodeId) return closure.pointsResponder;
-  if (closure.baseId === nodeId) return closure.pointsBase;
-  if (closure.encoderId === nodeId) return closure.pointsEncoder;
-  if (nodeId.startsWith("w:")) {
-    const address = nodeId.slice(2);
-    let sum = 0;
-    if (closure.initiatorWallet === address) sum += closure.pointsInitiator;
-    if (closure.responderWallet === address) sum += closure.pointsResponder;
-    if (closure.baseWallet === address) sum += closure.pointsBase;
-    if (closure.encoderWallet === address) sum += closure.pointsEncoder;
-    return sum;
-  }
-  return 0;
+  const address = nodeId.startsWith("w:") ? nodeId.slice(2) : null;
+  const seats = seatsOf(closure).filter((seat) => (address ? seat.wallet === address : seat.id === nodeId));
+  return seats.map((seat) => (seat.slot === "character" ? (seat.side === "talk" ? "talked" : "answered") : `${seat.side} ${seat.slot}`)).join(" · ");
 }
 
 export function nodeTouchesFocus(nodeId: string, edges: GraphEdge[], focus: string | null): boolean {
   if (!focus) return true;
   if (nodeId === focus) return true;
-  return edges.some(
-    (edge) => (edge.source === focus && edge.target === nodeId) || (edge.target === focus && edge.source === nodeId),
-  );
+  return edges.some((edge) => (edge.source === focus && edge.target === nodeId) || (edge.target === focus && edge.source === nodeId));
 }
 
 export function conversationLines(registry: Registry, convId: string): Line[] {
-  return registry.lines.filter((line) => line.convId === convId).sort((a, b) => a.block - b.block || (a.replyTo ? 1 : -1));
+  return registry.lines.filter((line) => line.convId === convId).sort((a, b) => (a.side === b.side ? a.block - b.block : a.side === "talk" ? -1 : 1));
 }
 
 export function conversationOf(registry: Registry, convId: string | null): Conversation | undefined {
@@ -239,16 +181,21 @@ export function conversationOf(registry: Registry, convId: string | null): Conve
   return registry.conversations.find((item) => item.id === convId);
 }
 
+/** Every piece seated in a conversation, both sides. */
+export function piecesIn(conversation: Conversation): string[] {
+  return SIDES.flatMap((side) => SLOTS.map((slot) => conversation[side][slot]?.id)).filter((id): id is string => Boolean(id));
+}
+
 /**
- * A holder reads a line only in this terminal, only if one of its pieces is in that conversation
- * (or it holds the base of the thread), and only while that base keeps the key open.
+ * A holder reads a line only in this terminal, only if one of its pieces sits in that talk,
+ * and only while the base of that line's side keeps its key open.
  */
 export function canRead(registry: Registry, line: Line, wallet: string | null, block: number): boolean {
   if (!wallet) return false;
   const conversation = conversationOf(registry, line.convId);
-  if (!conversation?.baseId) return false;
-  if (keyLeft(registry, conversation.baseId, block) <= 0) return false;
-  const ids = [conversation.characterId, conversation.responderId, conversation.baseId, conversation.encoderId];
+  if (!conversation) return false;
+  if (keyLeft(registry, conversation[line.side].base?.id, block) <= 0) return false;
+  const ids = piecesIn(conversation);
   return registry.assets.some((asset) => asset.owner === wallet && ids.includes(asset.id));
 }
 
@@ -263,13 +210,11 @@ export function tally(lines: Line[]): Array<{ glyph: string; n: number }> {
     .slice(0, 6);
 }
 
-/** Who put a base or an encoder into the talk, in words. */
-export function broughtBy(conversation: Conversation, role: "base" | "encoder"): string {
-  const who = conversation.brought?.[role];
-  const tok = (id: string | null) => padId(piece(id ?? "")?.tokenId ?? 0);
-  if (who === "opener") return `brought by ${tok(conversation.characterId)}`;
-  if (who === "responder") return `brought by ${tok(conversation.responderId)}`;
-  if (who === "idle") return `idle piece, taken by ${tok(conversation.responderId)}`;
-  if (who === "draw") return "drawn from the idle pool";
-  return "";
+/** How a base or an encoder took its seat, in words. */
+export function broughtBy(conversation: Conversation, side: SideName, slot: Slot): string {
+  const seat = conversation[side][slot];
+  if (!seat || slot === "character") return "";
+  if (seat.by === "speaker") return `brought by ${padId(piece(conversation[side].character?.id ?? "")?.tokenId ?? 0)}`;
+  if (seat.by === "joined") return "joined from the waiting room";
+  return "taken from the idle pool";
 }

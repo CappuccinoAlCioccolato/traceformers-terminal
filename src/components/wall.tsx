@@ -17,7 +17,7 @@ function mineSet(registry: Registry, wallet: string | null): Set<string> {
 /** A blink line lives one block on the public wall, then decays into a block of noise. */
 export function isDecayed(registry: Registry, line: Line, block: number): boolean {
   const conversation = conversationOf(registry, line.convId);
-  return piece(conversation?.baseId ?? "")?.form === "blink" && block > line.block + 1;
+  return piece(conversation?.[line.side].base?.id ?? "")?.form === "blink" && block > line.block + 1;
 }
 
 export function lineCipher(registry: Registry, line: Line, block: number): string {
@@ -33,10 +33,10 @@ function lineStatus(line: Line, byId: Map<string, Line>, conversation: Conversat
   }
   if (!conversation) return "";
   if (conversation.status === "expired") return "expired";
-  if (!conversation.baseId) return "sealed";
+  const side = conversation[line.side];
+  if (!side.base) return "sealed";
   if (conversation.status === "open") return "waiting";
-  if (conversation.kind === "complete") return "complete";
-  return piece(conversation.baseId)?.form ?? "";
+  return piece(side.base.id)?.form ?? "";
 }
 
 function cluster(lines: Line[]): Line[][] {
@@ -73,7 +73,7 @@ export function Stream() {
                 "muro-row",
                 line.dialect ? `is-${line.dialect}` : "is-bare",
                 line.block >= block - 1 && "is-fresh",
-                piece(conversation?.baseId ?? "")?.form === "blink" && !gone && "is-blink",
+                piece(conversation?.[line.side].base?.id ?? "")?.form === "blink" && !gone && "is-blink",
                 gone && "is-gone",
                 talkId === line.convId && "is-armed",
               );

@@ -135,15 +135,9 @@ export function Detail() {
               <span className="text-dim">{closure.block}</span>
               <span>{roleInClosure(id, closure)}</span>
               <span className="text-dim">
-                <Tok id={closure.initiatorId} />
-                {closure.responderId ? (
-                  <>
-                    {" ↔ "}
-                    <Tok id={closure.responderId} />
-                  </>
-                ) : (
-                  " complete"
-                )}
+                <Tok id={closure.pieces.talk.character} />
+                {" ↔ "}
+                <Tok id={closure.pieces.answer.character} />
               </span>
               <span className="text-accent">+{pointsIn(id, closure)}</span>
             </button>

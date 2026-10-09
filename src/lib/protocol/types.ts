@@ -23,42 +23,42 @@ export type IdleOffer = {
   owner: string;
 };
 
+/** A talk has two sides. Each side is a character, a base, and an encoder, possibly from different holders. */
+export type SideName = "talk" | "answer";
+export type Slot = "character" | "base" | "encoder";
+
+/**
+ * How a piece took its seat: in the character's own signature (speaker), by its holder joining the
+ * waiting room (joined), or taken by the relayer from an idle offer (pool).
+ */
+export type Bringer = "speaker" | "joined" | "pool";
+
+export type Seat = { id: string; holder: string; by: Bringer; signature: Hex | null };
+
+export type Side = Record<Slot, Seat | null>;
+
 export type ConversationStatus = "open" | "closed" | "expired";
 
-export type PendingDraw = {
-  responderId: string;
-  address: string;
-  signature: Hex;
-  requestedAt: number;
-};
-
-/** Who put a base or an encoder into a talk. */
-export type Bringer = "opener" | "responder" | "idle" | "draw" | "";
-
-/** An opening (targeted) or a complete offer. Both carry the lines that were spoken. */
 export type Conversation = {
   id: string;
-  kind: "targeted" | "complete";
-  characterId: string;
-  baseId: string | null;
-  encoderId: string | null;
-  responderId: string | null;
+  talk: Side;
+  answer: Side;
+  /** The dialect of the talk encoder. The answer encoder must speak the same one. */
+  dialect: Dialect | null;
   deadline: number;
   nonce: number;
-  signature: Hex;
-  opener: string;
   status: ConversationStatus;
   openedBlock: number;
+  /** Last block a seat changed: the relayer fills empty seats from the pool after a while. */
+  movedBlock: number;
   closureId: string | null;
-  draw: PendingDraw | null;
-  /** Both characters share one base and one encoder: this says who brought each. */
-  brought?: { base: Bringer; encoder: Bringer };
 };
 
 /** One line on the wall. Plaintext stays in this client; the wall shows the ciphertext only. */
 export type Line = {
   id: string;
   convId: string;
+  side: SideName;
   speakerId: string;
   replyTo: string | null;
   plaintext: string;
@@ -68,28 +68,21 @@ export type Line = {
   block: number;
 };
 
+export type Seats<T> = Record<SideName, Record<Slot, T>>;
+
 export type Closure = {
   id: string;
-  kind: "targeted" | "complete";
   convId: string;
-  initiatorId: string;
-  responderId: string | null;
-  baseId: string;
-  encoderId: string;
-  initiatorWallet: string;
-  responderWallet: string | null;
-  baseWallet: string;
-  encoderWallet: string;
-  pointsInitiator: number;
-  pointsResponder: number;
-  pointsBase: number;
-  pointsEncoder: number;
-  drawSeed: Hex | null;
+  pieces: Seats<string>;
+  wallets: Seats<string>;
+  points: Seats<number>;
+  /** The answering character is held by the opener's own wallet. */
+  self: boolean;
   block: number;
   at: number;
 };
 
-export type LogKind = "IdleOffer" | "Revoke" | "Opened" | "Closed" | "Expired" | "Delegate" | "Linked";
+export type LogKind = "IdleOffer" | "Revoke" | "Opened" | "Answered" | "Joined" | "Pooled" | "Closed" | "Expired" | "Delegate" | "Linked";
 
 export type LogRow = {
   id: number;
@@ -104,7 +97,7 @@ export type LogRow = {
 export type KeyWindow = { baseId: string; openedAt: number; window: number };
 
 export type Registry = {
-  version: 1;
+  version: 3;
   epoch: number;
   assets: Asset[];
   idles: IdleOffer[];
@@ -126,3 +119,6 @@ export type Registry = {
 };
 
 export type Result = { ok: true; note: string; refId?: string } | { ok: false; error: string };
+
+export const SIDES: SideName[] = ["talk", "answer"];
+export const SLOTS: Slot[] = ["character", "base", "encoder"];

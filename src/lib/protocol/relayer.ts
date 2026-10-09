@@ -1,4 +1,4 @@
-import { getAddress, isAddress, keccak256, recoverTypedDataAddress, stringToHex, type Hex } from "viem";
+import { getAddress, isAddress, recoverTypedDataAddress, type Hex } from "viem";
 import { piece, type Role } from "@/lib/trace/catalog";
 import { encode } from "@/lib/trace/cipher";
 import { speakable } from "@/lib/trace/portrait";
@@ -7,17 +7,18 @@ import {
   MAX_OPEN_SECONDS,
   MIN_OPEN_SECONDS,
   POINTS,
+  answerSpec,
   canonicalIds,
+  delegateSpec,
   idleSpec,
+  joinSpec,
   lineCommit,
   linkSpec,
   openSpec,
-  respondSpec,
   revokeSpec,
-  delegateSpec,
   type TypedSpec,
 } from "./domain";
-import type { Asset, Conversation, IdleOffer, LogKind, Registry, Result } from "./types";
+import { SIDES, SLOTS, type Asset, type Conversation, type IdleOffer, type LogKind, type Registry, type Result, type Seat, type Side, type SideName, type Slot } from "./types";
 
 // The relayer of this build runs in the browser. It checks every EIP-712 signature against the holder
 // at inclusion time, exactly as the contract would, and writes the log the wall, graph, and board read.
@@ -26,8 +27,8 @@ export const BLOCK_MS = 6500;
 export const GENESIS_BLOCK = 18_421_000;
 export const COOLDOWN = 3;
 export const MAX_GLYPHS = 6;
-/** The relayer includes the draw callback after this delay, standing in for a VRF round trip. */
-export const DRAW_MS = 8000;
+/** Blocks an empty base or encoder seat waits for a holder before the relayer takes an idle piece. */
+export const POOL_AFTER = 5;
 
 export function blockAt(registry: Registry, ms: number): number {
   return GENESIS_BLOCK + Math.max(0, Math.floor((ms - registry.epoch) / BLOCK_MS));
@@ -76,10 +77,7 @@ function mustAsset(registry: Registry, id: string): Asset {
   return asset;
 }
 
-function distinct(ids: (string | null | undefined)[]) {
-  const filled = ids.filter((id): id is string => Boolean(id));
-  if (new Set(filled).size !== filled.length) fail("The same NFT cannot fill two slots.");
-}
+const tok = (id: string | null | undefined) => (id && piece(id) ? `#${String(piece(id)!.tokenId).padStart(4, "0")}` : "—");
 
 export function nonceKey(assetId: string, purpose: string) {
   return `${assetId}:${purpose}`;
@@ -101,7 +99,7 @@ export function cooling(registry: Registry, assetId: string, block: number): num
 
 function assertCool(registry: Registry, assetId: string, block: number) {
   const left = cooling(registry, assetId, block);
-  if (left > 0) fail(`${piece(assetId) ? `#${piece(assetId)!.tokenId}` : assetId} cools down for ${left} more block${left === 1 ? "" : "s"}.`);
+  if (left > 0) fail(`${tok(assetId)} cools down for ${left} more block${left === 1 ? "" : "s"}.`);
 }
 
 function cool(registry: Registry, ids: (string | null)[], block: number) {
@@ -111,7 +109,7 @@ function cool(registry: Registry, ids: (string | null)[], block: number) {
 function log(registry: Registry, kind: LogKind, refId: string, by: string, ms: number) {
   registry.seq += 1;
   registry.log.push({ id: registry.seq, kind, refId, block: blockAt(registry, ms), at: ms, by });
-  if (registry.log.length > 400) registry.log.splice(0, registry.log.length - 400);
+  if (registry.log.length > 600) registry.log.splice(0, registry.log.length - 600);
 }
 
 function openKey(registry: Registry, baseId: string, block: number) {
@@ -123,48 +121,66 @@ function openKey(registry: Registry, baseId: string, block: number) {
   } else registry.keys.push({ baseId, openedAt: block, window });
 }
 
-export function keyLeft(registry: Registry, baseId: string | null, block: number): number {
+export function keyLeft(registry: Registry, baseId: string | null | undefined, block: number): number {
   if (!baseId) return 0;
   const key = registry.keys.find((item) => item.baseId === baseId);
   if (!key) return 0;
   return Math.max(0, key.openedAt + key.window - block);
 }
 
-/** Lines get their ciphertext as soon as the conversation has an encoder. */
-function cipherLines(registry: Registry, conversation: Conversation) {
-  const dialect = conversation.encoderId ? piece(conversation.encoderId)?.dialect : null;
-  if (!dialect) return;
+export function emptySide(): Side {
+  return { character: null, base: null, encoder: null };
+}
+
+export function sideReady(side: Side): boolean {
+  return Boolean(side.character && side.base && side.encoder);
+}
+
+/** Every piece seated in a conversation, both sides. */
+export function seatedIds(conversation: Conversation): string[] {
+  return SIDES.flatMap((name) => SLOTS.map((slot) => conversation[name][slot]?.id)).filter((id): id is string => Boolean(id));
+}
+
+/** The seats still empty, in the order the waiting room shows them. The answer side opens once the talk side is complete. */
+export function emptySeats(conversation: Conversation): { side: SideName; slot: Slot }[] {
+  if (conversation.status !== "open") return [];
+  const out: { side: SideName; slot: Slot }[] = [];
+  for (const slot of SLOTS) if (!conversation.talk[slot]) out.push({ side: "talk", slot });
+  if (!sideReady(conversation.talk)) return out;
+  for (const slot of SLOTS) if (!conversation.answer[slot]) out.push({ side: "answer", slot });
+  return out;
+}
+
+/** Lines get their ciphertext as soon as their side has an encoder. */
+function encodeLines(registry: Registry, conversation: Conversation) {
   for (const line of registry.lines) {
     if (line.convId !== conversation.id || line.ciphertext) continue;
+    const encoderId = conversation[line.side].encoder?.id;
+    const dialect = encoderId ? piece(encoderId)?.dialect : null;
+    if (!dialect) continue;
     line.dialect = dialect;
     line.ciphertext = encode(line.plaintext, dialect);
   }
 }
 
-function addLine(
-  registry: Registry,
-  input: { convId: string; speakerId: string; replyTo: string | null; plaintext: string; block: number },
-): string {
+function addLine(registry: Registry, input: { convId: string; side: SideName; speakerId: string; replyTo: string | null; plaintext: string; block: number }): string {
   registry.seq += 1;
   const id = `l-${input.block}-${registry.seq}`;
-  registry.lines.push({
-    id,
-    convId: input.convId,
-    speakerId: input.speakerId,
-    replyTo: input.replyTo,
-    plaintext: input.plaintext,
-    commit: lineCommit(input.plaintext),
-    dialect: null,
-    ciphertext: null,
-    block: input.block,
-  });
+  registry.lines.push({ ...input, id, commit: lineCommit(input.plaintext), dialect: null, ciphertext: null });
   return id;
 }
 
-async function consumeIdle(registry: Registry, assetId: string, role: Role, takerId: string, ms: number) {
+function lineCheck(plaintext: string, speaker: Asset) {
+  const chars = Array.from(plaintext);
+  if (chars.length === 0) fail("Compose at least one glyph.");
+  if (chars.length > MAX_GLYPHS) fail(`A line holds at most ${MAX_GLYPHS} glyphs.`);
+  const owned = new Set(speakable(speaker.tokenId));
+  if (chars.some((ch) => !owned.has(ch))) fail("A character speaks only with the glyphs its own art is drawn with.");
+}
+
+async function consumeIdle(registry: Registry, assetId: string, takerId: string, ms: number) {
   const offer = registry.idles.find((item) => item.assetId === assetId);
   if (!offer) fail("That piece is not in the idle pool.");
-  if (offer.role !== role) fail("The idle offer role does not match the slot.");
   const asset = mustAsset(registry, assetId);
   if (asset.owner !== offer.owner) fail("The idle offer no longer belongs to the current holder.");
   if (offer.expiry !== 0 && offer.expiry <= unix(ms)) fail("Idle offer expired.");
@@ -177,17 +193,7 @@ async function consumeIdle(registry: Registry, assetId: string, role: Role, take
   );
   if (recovered !== asset.owner) fail("The idle signature is no longer valid.");
   offer.uses += 1;
-  if (offer.maxUses !== 0 && offer.uses >= offer.maxUses) {
-    registry.idles = registry.idles.filter((item) => item.assetId !== assetId);
-  }
-}
-
-async function authorizePiece(registry: Registry, assetId: string, role: Role, signer: string, takerId: string, ms: number) {
-  const asset = mustAsset(registry, assetId);
-  if (asset.role !== role) fail(`The ${role} slot needs an NFT of that role.`);
-  if (asset.owner === signer) return asset;
-  await consumeIdle(registry, assetId, role, takerId, ms);
-  return asset;
+  if (offer.maxUses !== 0 && offer.uses >= offer.maxUses) registry.idles = registry.idles.filter((item) => item.assetId !== assetId);
 }
 
 /** Idle offers of a role that the taking character may use now, minus pieces already in the talk. */
@@ -205,85 +211,87 @@ export function eligibleIdle(registry: Registry, role: Role, banned: string[], t
     .sort((a, b) => a.assetId.localeCompare(b.assetId));
 }
 
-function writeClosure(
-  registry: Registry,
-  input: {
-    conversation: Conversation;
-    responder: Asset | null;
-    base: Asset;
-    encoder: Asset;
-    drawSeed: Hex | null;
-    by: string;
-    ms: number;
-  },
-): string {
-  const { conversation } = input;
-  const block = blockAt(registry, input.ms);
-  const initiator = mustAsset(registry, conversation.characterId);
-  const self = Boolean(input.responder && input.responder.owner === initiator.owner);
-  const points = self ? POINTS.self : POINTS[conversation.kind];
-  registry.seq += 1;
-  const id = `k-${block}-${registry.seq}`;
-  registry.closures.push({
-    id,
-    kind: conversation.kind,
-    convId: conversation.id,
-    initiatorId: initiator.id,
-    responderId: input.responder?.id ?? null,
-    baseId: input.base.id,
-    encoderId: input.encoder.id,
-    initiatorWallet: initiator.owner,
-    responderWallet: input.responder?.owner ?? null,
-    baseWallet: input.base.owner,
-    encoderWallet: input.encoder.owner,
-    pointsInitiator: points.initiator,
-    pointsResponder: points.responder,
-    pointsBase: points.base,
-    pointsEncoder: points.encoder,
-    drawSeed: input.drawSeed,
-    block,
-    at: input.ms,
-  });
-  conversation.status = "closed";
-  conversation.closureId = id;
-  conversation.baseId = input.base.id;
-  conversation.encoderId = input.encoder.id;
-  conversation.responderId = input.responder?.id ?? null;
-  conversation.draw = null;
-  cipherLines(registry, conversation);
-  openKey(registry, input.base.id, block);
-  log(registry, "Closed", conversation.id, input.by, input.ms);
-  return id;
+/** Can this piece sit in this seat? Role, dialect, freedom from other seats, and cooldown. */
+export function seatProblem(registry: Registry, conversation: Conversation, side: SideName, slot: Slot, asset: Asset, block: number): string | null {
+  if (asset.role !== slot) return `The ${slot} seat needs a ${slot}.`;
+  if (conversation[side][slot]) return `The ${side} ${slot} seat is already taken.`;
+  if (seatedIds(conversation).includes(asset.id)) return "The same NFT cannot sit in two seats of one talk.";
+  if (side === "answer" && !sideReady(conversation.talk)) return "The answer side opens once the talk side has its character, base, and encoder.";
+  if (side === "answer" && slot === "encoder" && conversation.dialect && piece(asset.id)?.dialect !== conversation.dialect) {
+    return `The answer must be encoded in ${conversation.dialect}, like the talk.`;
+  }
+  const left = cooling(registry, asset.id, block);
+  if (left > 0) return `${tok(asset.id)} cools down for ${left} more block${left === 1 ? "" : "s"}.`;
+  return null;
 }
 
-function mustOpenConversation(registry: Registry, id: string, ms: number): Conversation {
+function checkSeat(registry: Registry, conversation: Conversation, side: SideName, slot: Slot, asset: Asset, block: number) {
+  const problem = seatProblem(registry, conversation, side, slot, asset, block);
+  if (problem) fail(problem);
+}
+
+function seat(registry: Registry, conversation: Conversation, side: SideName, slot: Slot, asset: Asset, by: Seat["by"], signature: Hex | null, block: number) {
+  conversation[side][slot] = { id: asset.id, holder: asset.owner, by, signature };
+  conversation.movedBlock = block;
+  if (side === "talk" && slot === "encoder") conversation.dialect = piece(asset.id)?.dialect ?? null;
+  if (slot === "base") openKey(registry, asset.id, block);
+  cool(registry, [asset.id], block);
+  encodeLines(registry, conversation);
+}
+
+function mustOpen(registry: Registry, id: string, ms: number): Conversation {
   const conversation = registry.conversations.find((item) => item.id === id);
-  if (!conversation) fail("Unknown opening.");
-  if (conversation.status !== "open") fail("That opening is no longer open.");
-  if (conversation.deadline <= unix(ms)) fail("That opening is past its deadline.");
+  if (!conversation) fail("Unknown talk.");
+  if (conversation.status !== "open") fail("That talk is no longer open.");
+  if (conversation.deadline <= unix(ms)) fail("That talk is past its deadline.");
   return conversation;
 }
 
-async function assertOpeningFresh(registry: Registry, conversation: Conversation) {
-  const character = mustAsset(registry, conversation.characterId);
-  if (character.owner !== conversation.opener) fail("The opening character changed hands. The opening signature no longer counts.");
-  for (const id of [conversation.baseId, conversation.encoderId]) {
-    if (id && mustAsset(registry, id).owner !== conversation.opener) fail("The attached piece changed hands.");
+/** Close the talk when all six seats are taken. Every seated piece must still be with the holder who seated it. */
+function maybeClose(registry: Registry, conversation: Conversation, by: string, ms: number): boolean {
+  if (!sideReady(conversation.talk) || !sideReady(conversation.answer)) return false;
+  for (const name of SIDES) {
+    for (const slot of SLOTS) {
+      const taken = conversation[name][slot]!;
+      if (mustAsset(registry, taken.id).owner !== taken.holder) {
+        conversation[name][slot] = null;
+        if (name === "talk" && slot === "character") conversation.status = "expired";
+        return false;
+      }
+    }
   }
-  const opening = registry.lines.find((line) => line.convId === conversation.id && !line.replyTo);
-  if (!opening) fail("The opening line is missing.");
-  const recovered = await recover(
-    openSpec({
-      character: conversation.characterId,
-      base: conversation.baseId ?? "",
-      encoder: conversation.encoderId ?? "",
-      line: opening.commit,
-      deadline: conversation.deadline,
-      nonce: conversation.nonce,
-    }),
-    conversation.signature,
-  );
-  if (recovered !== character.owner) fail("Opening signature is no longer valid.");
+  const block = blockAt(registry, ms);
+  const talkHolder = conversation.talk.character!.holder;
+  const self = conversation.answer.character!.holder === talkHolder;
+  const pieces = { talk: {}, answer: {} } as Record<SideName, Record<Slot, string>>;
+  const wallets = { talk: {}, answer: {} } as Record<SideName, Record<Slot, string>>;
+  const points = { talk: {}, answer: {} } as Record<SideName, Record<Slot, number>>;
+  for (const name of SIDES) {
+    for (const slot of SLOTS) {
+      const taken = conversation[name][slot]!;
+      pieces[name][slot] = taken.id;
+      wallets[name][slot] = taken.holder;
+      let value: number = slot === "character" ? POINTS.character : POINTS.piece;
+      if (self && name === "talk" && slot === "character") value = POINTS.selfTalk;
+      if (self && name === "answer" && taken.holder === talkHolder) value = 0;
+      points[name][slot] = value;
+    }
+  }
+  registry.seq += 1;
+  const id = `k-${block}-${registry.seq}`;
+  registry.closures.push({ id, convId: conversation.id, pieces, wallets, points, self, block, at: ms });
+  conversation.status = "closed";
+  conversation.closureId = id;
+  log(registry, "Closed", conversation.id, by, ms);
+  return true;
+}
+
+function closedNote(registry: Registry, conversation: Conversation): string {
+  const closure = registry.closures.find((item) => item.id === conversation.closureId);
+  if (!closure) return "Talk closed.";
+  return closure.self
+    ? "Talk closed. The same wallet answered itself, so its answer side earns nothing."
+    : `Talk closed: ${closure.points.talk.character} + ${closure.points.answer.character} to the characters, 1 to each base and encoder.`;
 }
 
 async function run(work: () => Promise<{ note: string; refId?: string }>): Promise<Result> {
@@ -304,60 +312,43 @@ export function expireDue(registry: Registry, ms: number): string[] {
   for (const conversation of registry.conversations) {
     if (conversation.status !== "open" || conversation.deadline > unix(ms)) continue;
     conversation.status = "expired";
-    conversation.draw = null;
     expired.push(conversation.id);
     log(registry, "Expired", conversation.id, "relayer", ms);
   }
   return expired;
 }
 
-export async function settleDraw(registry: Registry, convId: string, ms: number, minMs = DRAW_MS): Promise<Result> {
-  return run(async () => {
-    const conversation = mustOpenConversation(registry, convId, ms);
-    const pending = conversation.draw;
-    if (!pending) fail("No draw is waiting on this opening.");
-    if (ms - pending.requestedAt < minMs) fail("The relayer callback is not ready yet.");
-    await assertOpeningFresh(registry, conversation);
-    const empty: Role = conversation.baseId ? "encoder" : "base";
-    if (conversation.baseId && conversation.encoderId) fail("Both slots are filled: nothing to draw.");
-    const responder = mustAsset(registry, pending.responderId);
-    if (responder.owner !== pending.address) {
-      conversation.draw = null;
-      fail("The responding character changed hands.");
-    }
-    const pool = eligibleIdle(
-      registry,
-      empty,
-      [conversation.characterId, conversation.baseId, conversation.encoderId, responder.id].filter((id): id is string => Boolean(id)),
-      responder.id,
-      ms,
-    );
-    if (!pool.length) {
-      conversation.draw = null;
-      fail("The idle pool is empty for the missing slot. Offers were not consumed.");
-    }
-    const seed = keccak256(stringToHex(`${convId}:${pending.signature}:${blockAt(registry, ms)}`));
-    const chosen = pool[Number(BigInt(seed) % BigInt(pool.length))]!;
-    await consumeIdle(registry, chosen.assetId, empty, responder.id, ms);
-    const drawn = mustAsset(registry, chosen.assetId);
-    const base = empty === "base" ? drawn : mustAsset(registry, conversation.baseId!);
-    const encoder = empty === "encoder" ? drawn : mustAsset(registry, conversation.encoderId!);
-    distinct([conversation.characterId, responder.id, base.id, encoder.id]);
-    conversation.brought = { ...(conversation.brought ?? { base: "", encoder: "" }), [empty]: "draw" };
-    writeClosure(registry, { conversation, responder, base, encoder, drawSeed: seed, by: "relayer", ms });
-    return { note: `Callback included. ${empty === "base" ? "Base" : "Encoder"} #${drawn.tokenId} drawn from the idle pool.`, refId: convId };
-  });
-}
-
-export async function settleRipe(registry: Registry, ms: number): Promise<string[]> {
-  const settled: string[] = [];
+/**
+ * An empty base or encoder seat that nobody took for a while gets an idle piece from the pool, if one fits.
+ * The answer side needs its character first: the idle offer may be reserved for some characters.
+ */
+export async function fillFromPool(registry: Registry, ms: number): Promise<string[]> {
+  const block = blockAt(registry, ms);
+  const filled: string[] = [];
   for (const conversation of registry.conversations) {
-    if (conversation.status !== "open" || !conversation.draw) continue;
-    if (ms - conversation.draw.requestedAt < DRAW_MS) continue;
-    const result = await settleDraw(registry, conversation.id, ms);
-    if (result.ok) settled.push(conversation.id);
+    if (conversation.status !== "open" || block - conversation.movedBlock < POOL_AFTER) continue;
+    for (const { side, slot } of emptySeats(conversation)) {
+      if (slot === "character") continue;
+      const taker = conversation[side].character?.id;
+      if (!taker) continue;
+      const options = eligibleIdle(registry, slot, seatedIds(conversation), taker, ms).filter(
+        (offer) => !seatProblem(registry, conversation, side, slot, mustAsset(registry, offer.assetId), block),
+      );
+      const chosen = options[(block + conversation.openedBlock) % Math.max(1, options.length)];
+      if (!chosen) continue;
+      try {
+        await consumeIdle(registry, chosen.assetId, taker, ms);
+      } catch (err) {
+        if (err instanceof ProtocolError) continue;
+        throw err;
+      }
+      seat(registry, conversation, side, slot, mustAsset(registry, chosen.assetId), "pool", null, block);
+      log(registry, "Pooled", conversation.id, "relayer", ms);
+      filled.push(conversation.id);
+    }
+    maybeClose(registry, conversation, "relayer", ms);
   }
-  return settled;
+  return filled;
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -398,10 +389,8 @@ export async function submitLink(registry: Registry, input: { address: string; s
     registry.grants.push(address);
     log(registry, "Linked", address, address, ms);
     if (granted.length === 0) return { note: "Wallet signed in. Every piece of this registry is already held: reset it from the footer to start over." };
-    const chars = granted.filter((asset) => asset.role === "character").length;
-    const bases = granted.filter((asset) => asset.role === "base").length;
-    const encoders = granted.filter((asset) => asset.role === "encoder").length;
-    return { note: `Wallet signed in. ${chars} characters, ${bases} bases, and ${encoders} encoders are now on this address.` };
+    const count = (role: Role) => granted.filter((asset) => asset.role === role).length;
+    return { note: `Wallet signed in. ${count("character")} characters, ${count("base")} bases, and ${count("encoder")} encoders are now on this address.` };
   });
 }
 
@@ -457,6 +446,7 @@ export async function submitRevoke(registry: Registry, input: { nft: string; non
   });
 }
 
+/** A character opens a talk. It may bring its base and encoder, or leave either seat to the waiting room. */
 export async function submitOpen(
   registry: Registry,
   input: { character: string; base: string; encoder: string; plaintext: string; deadline: number; nonce: number; signature: string },
@@ -464,131 +454,116 @@ export async function submitOpen(
 ): Promise<Result> {
   return run(async () => {
     const block = blockAt(registry, ms);
-    if (!input.base && !input.encoder) fail("An opening brings a base, an encoder, or both.");
-    const kind = input.base && input.encoder ? "complete" : "targeted";
     const now = unix(ms);
     const slack = 90;
     if (input.deadline < now + MIN_OPEN_SECONDS - slack || input.deadline > now + MAX_OPEN_SECONDS + slack) {
       fail("The window must be between 2 minutes and 2 hours.");
     }
     const character = mustAsset(registry, input.character);
-    if (character.role !== "character") fail("Only a character can open.");
-    const attached = [input.base, input.encoder].filter(Boolean).map((id) => mustAsset(registry, id));
-    if (input.base && mustAsset(registry, input.base).role !== "base") fail("The base slot needs a base.");
-    if (input.encoder && mustAsset(registry, input.encoder).role !== "encoder") fail("The encoder slot needs an encoder.");
-    distinct([input.character, input.base, input.encoder]);
+    if (character.role !== "character") fail("Only a character can open a talk.");
     lineCheck(input.plaintext, character);
     assertCool(registry, character.id, block);
-    for (const item of attached) assertCool(registry, item.id, block);
-    const commit = lineCommit(input.plaintext);
     const recovered = await recover(
-      openSpec({ character: input.character, base: input.base, encoder: input.encoder, line: commit, deadline: input.deadline, nonce: input.nonce }),
+      openSpec({ character: input.character, base: input.base, encoder: input.encoder, line: lineCommit(input.plaintext), deadline: input.deadline, nonce: input.nonce }),
       input.signature,
     );
-    if (recovered !== character.owner || attached.some((item) => item.owner !== recovered)) fail("The character and the pieces it brings must belong to the signer.");
-    bumpNonce(registry, input.character, "open", input.nonce);
+    if (recovered !== character.owner) fail("The character does not belong to the signer.");
     registry.seq += 1;
-    const id = `op-${block}-${registry.seq}`;
+    const id = `t-${block}-${registry.seq}`;
     const conversation: Conversation = {
       id,
-      kind,
-      characterId: input.character,
-      baseId: input.base || null,
-      encoderId: input.encoder || null,
-      responderId: null,
+      talk: emptySide(),
+      answer: emptySide(),
+      dialect: null,
       deadline: input.deadline,
       nonce: input.nonce,
-      signature: input.signature as Hex,
-      opener: recovered,
       status: "open",
       openedBlock: block,
+      movedBlock: block,
       closureId: null,
-      draw: null,
-      brought: { base: input.base ? "opener" : "", encoder: input.encoder ? "opener" : "" },
     };
+    for (const [slot, pieceId] of [["base", input.base], ["encoder", input.encoder]] as const) {
+      if (!pieceId) continue;
+      const asset = mustAsset(registry, pieceId);
+      checkSeat(registry, conversation, "talk", slot, asset, block);
+      if (asset.owner !== recovered) fail(`The ${slot} you bring must be yours. Leave the seat empty and its holder can join.`);
+    }
+    bumpNonce(registry, input.character, "open", input.nonce);
+    conversation.talk.character = { id: character.id, holder: recovered, by: "speaker", signature: input.signature as Hex };
+    cool(registry, [character.id], block);
+    addLine(registry, { convId: id, side: "talk", speakerId: character.id, replyTo: null, plaintext: input.plaintext, block });
+    for (const [slot, pieceId] of [["base", input.base], ["encoder", input.encoder]] as const) {
+      if (pieceId) seat(registry, conversation, "talk", slot, mustAsset(registry, pieceId), "speaker", input.signature as Hex, block);
+    }
     registry.conversations.push(conversation);
-    addLine(registry, { convId: id, speakerId: character.id, replyTo: null, plaintext: input.plaintext, block });
-    cipherLines(registry, conversation);
-    if (input.base) openKey(registry, input.base, block);
-    cool(registry, [character.id, ...attached.map((item) => item.id)], block);
     log(registry, "Opened", id, recovered, ms);
-    const waits = kind === "complete" ? "another character" : `${input.base ? "an encoder" : "a base"} and another character`;
-    return { note: `Opening included. It waits for ${waits}.`, refId: id };
+    const missing = SLOTS.filter((slot) => !conversation.talk[slot]);
+    return {
+      note: missing.length ? `Talk opened. Its ${missing.join(" and ")} seat waits in the waiting room.` : "Talk opened with all three pieces. It waits for an answer.",
+      refId: id,
+    };
   });
 }
 
-function closedNote(registry: Registry, conversation: Conversation): string {
-  const closure = registry.closures.find((item) => item.id === conversation.closureId);
-  if (!closure) return "Conversation closed.";
-  const split = `${closure.pointsInitiator} / ${closure.pointsResponder} / ${closure.pointsBase} / ${closure.pointsEncoder}`;
-  const self = closure.responderWallet === closure.initiatorWallet ? " The same wallet answered itself, so the answer earns nothing." : "";
-  return `Conversation closed: ${split} points sit on the NFTs.${self}`;
-}
-
-function lineCheck(plaintext: string, speaker: Asset) {
-  const chars = Array.from(plaintext);
-  if (chars.length === 0) fail("Compose at least one glyph.");
-  if (chars.length > MAX_GLYPHS) fail(`A line holds at most ${MAX_GLYPHS} glyphs.`);
-  const owned = new Set(speakable(speaker.tokenId));
-  if (chars.some((ch) => !owned.has(ch))) fail("A character speaks only with glyphs from its own grid.");
-}
-
-export async function submitRespond(
+/** A character answers a talk whose talk side is complete. It may bring a base, and an encoder of the same dialect. */
+export async function submitAnswer(
   registry: Registry,
   input: { openId: string; character: string; base: string; encoder: string; plaintext: string; signature: string },
   ms: number,
 ): Promise<Result> {
   return run(async () => {
     const block = blockAt(registry, ms);
-    const conversation = mustOpenConversation(registry, input.openId, ms);
-    await assertOpeningFresh(registry, conversation);
-    if (conversation.draw) fail("A draw is already waiting on this opening.");
-    if (conversation.baseId && input.base) fail("The base slot is already filled.");
-    if (conversation.encoderId && input.encoder) fail("The encoder slot is already filled.");
-    const empty: Role | null = conversation.baseId && conversation.encoderId ? null : conversation.baseId ? "encoder" : "base";
-    const supplied = empty === "base" ? input.base : empty === "encoder" ? input.encoder : "";
+    const conversation = mustOpen(registry, input.openId, ms);
+    if (!sideReady(conversation.talk)) fail("The talk still misses pieces. Answer once its base and encoder are seated.");
+    if (conversation.answer.character) fail("Another character already answered this talk.");
     const responder = mustAsset(registry, input.character);
-    if (responder.role !== "character") fail("Only a character can respond.");
-    if (responder.id === conversation.characterId) fail("The same character cannot answer itself.");
+    checkSeat(registry, conversation, "answer", "character", responder, block);
     lineCheck(input.plaintext, responder);
-    assertCool(registry, responder.id, block);
-    const commit = lineCommit(input.plaintext);
     const recovered = await recover(
-      respondSpec({ openId: input.openId, character: input.character, base: input.base, encoder: input.encoder, line: commit }),
+      answerSpec({ openId: input.openId, character: input.character, base: input.base, encoder: input.encoder, line: lineCommit(input.plaintext) }),
       input.signature,
     );
     if (recovered !== responder.owner) fail("The signature is not from the character's holder.");
-    const opening = registry.lines.find((line) => line.convId === conversation.id && !line.replyTo);
-    addLine(registry, { convId: conversation.id, speakerId: responder.id, replyTo: opening?.id ?? null, plaintext: input.plaintext, block });
-    cool(registry, [responder.id], block);
-    if (!empty) {
-      const base = mustAsset(registry, conversation.baseId!);
-      const encoder = mustAsset(registry, conversation.encoderId!);
-      distinct([conversation.characterId, responder.id, base.id, encoder.id]);
-      writeClosure(registry, { conversation, responder, base, encoder, drawSeed: null, by: recovered, ms });
-      return { note: closedNote(registry, conversation), refId: conversation.id };
+    for (const [slot, pieceId] of [["base", input.base], ["encoder", input.encoder]] as const) {
+      if (!pieceId) continue;
+      const asset = mustAsset(registry, pieceId);
+      checkSeat(registry, conversation, "answer", slot, asset, block);
+      if (asset.owner !== recovered) fail(`The ${slot} you bring must be yours. Leave the seat empty and its holder can join.`);
     }
-    if (!supplied) {
-      conversation.draw = { responderId: responder.id, address: recovered, signature: input.signature as Hex, requestedAt: ms };
-      conversation.responderId = responder.id;
-      return { note: "Response included. The relayer draws the missing piece from the idle pool: wait for the callback.", refId: conversation.id };
+    seat(registry, conversation, "answer", "character", responder, "speaker", input.signature as Hex, block);
+    const opening = registry.lines.find((line) => line.convId === conversation.id && line.side === "talk");
+    addLine(registry, { convId: conversation.id, side: "answer", speakerId: responder.id, replyTo: opening?.id ?? null, plaintext: input.plaintext, block });
+    for (const [slot, pieceId] of [["base", input.base], ["encoder", input.encoder]] as const) {
+      if (pieceId) seat(registry, conversation, "answer", slot, mustAsset(registry, pieceId), "speaker", input.signature as Hex, block);
     }
-    const chosen = await authorizePiece(registry, supplied, empty, recovered, responder.id, ms);
-    conversation.brought = { ...(conversation.brought ?? { base: "", encoder: "" }), [empty]: chosen.owner === recovered ? "responder" : "idle" };
-    const base = empty === "base" ? chosen : mustAsset(registry, conversation.baseId!);
-    const encoder = empty === "encoder" ? chosen : mustAsset(registry, conversation.encoderId!);
-    distinct([conversation.characterId, responder.id, base.id, encoder.id]);
-    writeClosure(registry, { conversation, responder, base, encoder, drawSeed: null, by: recovered, ms });
-    cool(registry, [chosen.id], block);
-    return { note: closedNote(registry, conversation), refId: conversation.id };
+    encodeLines(registry, conversation);
+    log(registry, "Answered", conversation.id, recovered, ms);
+    if (maybeClose(registry, conversation, recovered, ms)) return { note: closedNote(registry, conversation), refId: conversation.id };
+    const missing = SLOTS.filter((slot) => !conversation.answer[slot]);
+    return { note: `Answer included. Its ${missing.join(" and ")} seat waits in the waiting room.`, refId: conversation.id };
   });
 }
 
-export async function submitDelegate(
-  registry: Registry,
-  input: { nft: string; to: string; nonce: number; signature: string },
-  ms: number,
-): Promise<Result> {
+/** A base or encoder holder takes an empty seat from the waiting room. */
+export async function submitJoin(registry: Registry, input: { openId: string; side: SideName; nft: string; nonce: number; signature: string }, ms: number): Promise<Result> {
+  return run(async () => {
+    const block = blockAt(registry, ms);
+    const conversation = mustOpen(registry, input.openId, ms);
+    if (input.side !== "talk" && input.side !== "answer") fail("Unknown side.");
+    const asset = mustAsset(registry, input.nft);
+    if (asset.role === "character") fail("A character does not join: it opens or answers.");
+    checkSeat(registry, conversation, input.side, asset.role, asset, block);
+    const recovered = await recover(joinSpec({ openId: input.openId, side: input.side, nft: input.nft, nonce: input.nonce }), input.signature);
+    if (recovered !== asset.owner) fail("Only the holder of this piece can seat it.");
+    bumpNonce(registry, input.nft, "join", input.nonce);
+    seat(registry, conversation, input.side, asset.role, asset, "joined", input.signature as Hex, block);
+    log(registry, "Joined", conversation.id, recovered, ms);
+    if (maybeClose(registry, conversation, recovered, ms)) return { note: `${tok(asset.id)} joined and closed the talk. ${closedNote(registry, conversation)}`, refId: conversation.id };
+    return { note: `${tok(asset.id)} joined the ${input.side} side as its ${asset.role}.`, refId: conversation.id };
+  });
+}
+
+export async function submitDelegate(registry: Registry, input: { nft: string; to: string; nonce: number; signature: string }, ms: number): Promise<Result> {
   return run(async () => {
     const asset = mustAsset(registry, input.nft);
     const to = normAddress(input.to);
@@ -598,6 +573,20 @@ export async function submitDelegate(
     bumpNonce(registry, input.nft, "delegate", input.nonce);
     asset.owner = to;
     registry.idles = registry.idles.filter((offer) => offer.assetId !== input.nft);
+    // Earlier signatures on this piece stop counting: it leaves every seat of every open talk.
+    for (const conversation of registry.conversations) {
+      if (conversation.status !== "open") continue;
+      for (const name of SIDES) {
+        for (const slot of SLOTS) {
+          if (conversation[name][slot]?.id !== input.nft) continue;
+          conversation[name][slot] = null;
+          if (name === "talk" && slot === "character") {
+            conversation.status = "expired";
+            log(registry, "Expired", conversation.id, "relayer", ms);
+          }
+        }
+      }
+    }
     log(registry, "Delegate", input.nft, recovered, ms);
     return { note: `Delegated. ${to.slice(0, 6)}…${to.slice(-4)} now signs for this piece; earlier signatures on it no longer count.`, refId: input.nft };
   });

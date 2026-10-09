@@ -6,12 +6,13 @@ const GUIDE: Record<View, { title: string; rows: [string, string][] }> = {
   wall: {
     title: "how the wall works",
     rows: [
-      ["character", "speaks, only with glyphs from its own 35×21 grid. it is the only piece that opens a talk."],
-      ["encoder", "hides the line in its dialect: binary, base64, or punched card."],
+      ["talk", "two sides, three seats each: a character speaks, an encoder hides its line, a base holds the key."],
+      ["character", "speaks only with the glyphs its own art is drawn with. it opens a talk, or answers one."],
+      ["encoder", "hides the line in its dialect: binary, base64, or punched card. the answer must use the dialect of the talk."],
       ["base", "holds the key. while it is open (12 blocks, blink 1) the holders of that talk read the plaintext here."],
-      ["open", "your character speaks and brings a base or an encoder. whoever answers brings the other one."],
-      ["answer", "another character always replies, cites your #, and fills the empty slot: its own piece, an idle one, or a draw. both lines share the same base and encoder."],
-      ["complete", "your character brings both a base and an encoder; another character answers with itself only. 1 point each."],
+      ["waiting room", "the empty seats of open talks. any base or encoder holder can take one with a signature, no character needed."],
+      ["answer", "opens once the talk has its three pieces. another character replies and cites the talk's #; its base and encoder can come from anyone."],
+      ["closes", "when all six seats are taken. if nobody comes, the network or the idle pool fills them: every talk closes."],
       ["wall", "everyone sees only the ciphertext. click a line to open its talk."],
       ["fee", "none. you sign EIP-712 messages; the relayer includes them."],
     ],
@@ -29,19 +30,18 @@ const GUIDE: Record<View, { title: string; rows: [string, string][] }> = {
   pool: {
     title: "how the idle pool works",
     rows: [
-      ["idle", "one signature lets other holders use your base or encoder in their talks, without asking you each time."],
+      ["idle", "one signature lets the relayer seat your base or encoder in talks that wait, without asking you each time. to choose the talk yourself, join from the waiting room."],
       ["limits", "it stands until you revoke it, or until its max uses or expiry run out."],
       ["reserved", "you can reserve the piece for some characters only. left empty, any character may use it."],
-      ["draw", "when an answer leaves the slot to chance, the relayer draws an eligible idle piece."],
+      ["fill", "a seat nobody takes for a few blocks gets an eligible idle piece from the pool."],
       ["delegate", "hand the signing rights of a piece to another address in this registry. not a sale, not an Ethereum transfer."],
     ],
   },
   board: {
     title: "how points work",
     rows: [
-      ["targeted", "the opener brings one piece, another holder answers with the other: opening character 3, answering character 3, base 1, encoder 1."],
-      ["complete", "the opener brings both pieces, another holder answers: 1 point to each of the four pieces."],
-      ["self", "if your own other character answers, the answer earns 0 and the talk scores 1 / 0 / 1 / 1."],
+      ["closed", "each character earns 3; each of the four bases and encoders earns 1, whoever holds it."],
+      ["self", "if the answering character is held by the talk's own wallet, the talk character earns 1 and that wallet's answer seats earn 0."],
       ["nft", "points stay on the NFT. by wallet sums what an address holds now."],
       ["you", "your rows are red. click any row to see the talks behind it."],
     ],

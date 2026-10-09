@@ -11,6 +11,7 @@ import { TalkWindow } from "@/components/talk-window";
 import { Terminal } from "@/components/terminal";
 import { Views } from "@/components/views";
 import { Stream } from "@/components/wall";
+import { Room, countWaiting } from "@/components/room";
 import { WalletSheet } from "@/components/wallet-sheet";
 
 const VIEWS: { id: View; label: string }[] = [
@@ -33,6 +34,7 @@ export function App() {
 
   const block = registry ? blockAt(registry, now) : 0;
   const open = registry ? registry.conversations.filter((item) => item.status === "open").length : 0;
+  const seats = registry ? countWaiting(registry, now) : 0;
 
   return (
     <div className={cx("frame", detailId && "has-drawer")}>
@@ -40,7 +42,11 @@ export function App() {
         <header className="topbar">
           <p className="prompt m-0">traceformers@terminal:~$</p>
           <div className="topbar-meta">
-            {registry ? <span>{open} open</span> : null}
+            {registry ? (
+              <button type="button" className="link-btn" onClick={() => { setView("wall"); window.requestAnimationFrame(() => document.getElementById("room")?.scrollIntoView({ behavior: "smooth" })); }}>
+                {open} open · {seats} seat{seats === 1 ? "" : "s"} waiting
+              </button>
+            ) : null}
             <span>
               block <span key={block} className="block-tick">{block || "…"}</span>
             </span>
@@ -65,6 +71,7 @@ export function App() {
         ) : view === "wall" ? (
           <>
             <Stream />
+            <Room />
             <Terminal />
           </>
         ) : (

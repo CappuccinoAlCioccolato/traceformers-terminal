@@ -8,39 +8,42 @@ import {
   lineCommit,
   linkSpec,
   openSpec,
-  respondSpec,
+  answerSpec,
+  joinSpec,
   revokeSpec,
   delegateSpec,
 } from "@/lib/protocol/domain";
-import { ambient, chooseResponder, createGenesis, npcRespond } from "@/lib/protocol/network";
+import { ambient, chooseAnswer, createGenesis, npcAnswer } from "@/lib/protocol/network";
+import { piecesIn } from "@/lib/protocol/derive";
 import {
   BLOCK_MS,
   GENESIS_BLOCK,
   blockAt,
-  cooling,
   eligibleIdle,
   nextNonce,
   renewKey,
-  settleDraw,
+  seatProblem,
+  sideReady,
+  submitAnswer,
+  submitJoin,
   submitIdle,
   submitLink,
   submitOpen,
-  submitRespond,
   submitRevoke,
   submitDelegate,
   unix,
 } from "@/lib/protocol/relayer";
-import type { Registry, Result } from "@/lib/protocol/types";
+import type { Registry, Result, SideName } from "@/lib/protocol/types";
 import { useWallet } from "@/lib/wallet/store";
 
-// v2: every talk gets an answer and idle offers carry an allowlist; older registries restart from genesis.
-const STORE_KEY = "traceformers-terminal.registry.v2";
+// v3: a talk has two sides of three seats each; older registries restart from genesis.
+const STORE_KEY = "traceformers-terminal.registry.v3";
 const REPLY_MS = 2600;
 const CATCH_UP = 48;
 
 export type View = "wall" | "graph" | "pool" | "board";
 /** Where a note belongs: it is shown under the section that produced it. */
-export type Scope = "terminal" | "talk" | "wallet" | "pool-offer" | "pool-delegate" | "footer";
+export type Scope = "terminal" | "room" | "talk" | "wallet" | "pool-offer" | "pool-delegate" | "footer";
 export type Answerer = "network" | "mine";
 
 type AppState = {
@@ -120,7 +123,7 @@ function load(): Registry | null {
     const raw = window.localStorage.getItem(STORE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Registry;
-    if (parsed?.version !== 1 || !Array.isArray(parsed.assets) || !Array.isArray(parsed.closures)) return null;
+    if (parsed?.version !== 3 || !Array.isArray(parsed.assets) || !Array.isArray(parsed.closures)) return null;
     // Registries saved by earlier builds: no handles yet, and delegation was logged as a transfer.
     parsed.handles ??= {};
     for (const row of parsed.log) if ((row.kind as string) === "Transfer") row.kind = "Delegate";
@@ -148,7 +151,10 @@ async function advance() {
   const target = blockAt(registry, Date.now());
   if (target <= registry.cursor) return;
   const me = useWallet.getState().address;
-  const drawing = registry.conversations.filter((item) => item.draw && item.draw.address === me).map((item) => item.id);
+  // Talks where one of your pieces sits: when the network closes one, the terminal says so.
+  const mineOpen = me
+    ? registry.conversations.filter((item) => item.status === "open" && piecesIn(item).some((id) => registry.assets.find((asset) => asset.id === id)?.owner === me)).map((item) => item.id)
+    : [];
   await mutate(
     async (draft) => {
       for (let block = Math.max(draft.cursor + 1, target - CATCH_UP); block <= target; block++) {
@@ -160,16 +166,8 @@ async function advance() {
     () => true,
   );
   const after = useApp.getState().registry;
-  for (const id of drawing) {
-    const conversation = after?.conversations.find((item) => item.id === id);
-    if (!conversation || conversation.draw) continue;
-    say(
-      conversation.status === "closed"
-        ? { ok: true, note: `Callback included for ${id}: the relayer drew the missing piece and the talk is closed.` }
-        : { ok: false, error: `The draw for ${id} found no eligible idle piece. Offers were not consumed.` },
-      "terminal",
-    );
-  }
+  const closed = mineOpen.filter((id) => after?.conversations.find((item) => item.id === id)?.status === "closed");
+  if (closed.length) say({ ok: true, note: `${closed.join(", ")} closed: every seat was taken. Open it from the wall or the log.` }, "terminal");
 }
 
 export function bootApp(): () => void {
@@ -263,15 +261,15 @@ export function linkWallet() {
   });
 }
 
-/** Open a talk bringing one piece (targeted) or both a base and an encoder (complete). */
-export function openConversation(input: { characterId: string; attachedIds: string[]; plaintext: string; seconds: number; answerer: Answerer }) {
+/** Open a talk. The base and the encoder are optional: an empty seat waits in the waiting room. */
+export function openConversation(input: { characterId: string; base: string; encoder: string; plaintext: string; seconds: number; answerer: Answerer }) {
   return signed("terminal", async () => {
     const { signTyped } = wallet();
     const registry = registryNow();
     const message = {
       character: input.characterId,
-      base: input.attachedIds.find((id) => piece(id)?.role === "base") ?? "",
-      encoder: input.attachedIds.find((id) => piece(id)?.role === "encoder") ?? "",
+      base: input.base,
+      encoder: input.encoder,
       deadline: unix(Date.now()) + input.seconds,
       nonce: nextNonce(registry, input.characterId, "open"),
     };
@@ -279,29 +277,45 @@ export function openConversation(input: { characterId: string; attachedIds: stri
     const result = await submit((draft, ms) => submitOpen(draft, { ...message, plaintext: input.plaintext, signature }, ms));
     if (result.ok && result.refId) {
       useApp.setState({ talkId: result.refId, awaiting: result.refId });
-      window.setTimeout(() => void autoAnswer(result.refId!, input.answerer), REPLY_MS);
+      window.setTimeout(() => void autoAnswer(result.refId!, input.answerer, Date.now()), REPLY_MS);
     }
     return result;
   });
 }
 
-/** The answer comes by itself: a network character, or your other character signing with your wallet. */
-async function autoAnswer(convId: string, answerer: Answerer) {
+const ANSWER_WAIT_MS = 90_000;
+
+/**
+ * The answer comes by itself once the talk side has all three pieces: a network character, or your other
+ * character signing with your wallet. Until then it waits; the waiting room may fill the empty seats.
+ */
+async function autoAnswer(convId: string, answerer: Answerer, since: number) {
+  const conversation = useApp.getState().registry?.conversations.find((item) => item.id === convId);
+  const stop = () => {
+    if (useApp.getState().awaiting === convId) useApp.setState({ awaiting: null });
+  };
+  if (!conversation || conversation.status !== "open" || conversation.answer.character) return stop();
+  if (!sideReady(conversation.talk)) {
+    if (Date.now() - since > ANSWER_WAIT_MS) return stop();
+    window.setTimeout(() => void autoAnswer(convId, answerer, since), 1500);
+    return;
+  }
   try {
     if (answerer === "mine") {
       await answerWithMine(convId);
       return;
     }
     const result = await submit(async (draft, ms) => {
-      const conversation = draft.conversations.find((item) => item.id === convId);
-      if (!conversation || conversation.status !== "open" || conversation.draw) return { ok: false, error: "That opening is no longer waiting." };
-      const choice = chooseResponder(draft, conversation, ms);
-      if (!choice) return { ok: false, error: "No network character is free to answer right now. Your opening stays open until its deadline." };
-      return npcRespond(draft, conversation, choice.responderId, choice.pieceId, ms);
+      const target = draft.conversations.find((item) => item.id === convId);
+      if (!target || target.status !== "open" || target.answer.character) return { ok: false, error: "That talk is no longer waiting for an answer." };
+      // The network answers with its character and may leave its base or encoder seat to the waiting room.
+      const choice = chooseAnswer(draft, target, ms, Math.random);
+      if (!choice) return { ok: false, error: "No network character is free right now. Your talk waits in the waiting room." };
+      return npcAnswer(draft, target, choice.characterId, choice, ms);
     });
     say(result, "terminal");
   } finally {
-    if (useApp.getState().awaiting === convId) useApp.setState({ awaiting: null });
+    stop();
   }
 }
 
@@ -311,42 +325,40 @@ async function answerWithMine(convId: string) {
   const conversation = registry.conversations.find((item) => item.id === convId);
   if (!conversation) return;
   const block = blockAt(registry, Date.now());
-  const other = registry.assets.find(
-    (asset) => asset.owner === address && asset.role === "character" && asset.id !== conversation.characterId && cooling(registry, asset.id, block) === 0,
-  );
+  const free = (role: Role) =>
+    registry.assets.filter(
+      (asset) => asset.owner === address && asset.role === role && !seatProblem(registry, conversation, "answer", role, asset, block),
+    );
+  const other = free("character")[0];
   if (!other) {
-    say({ ok: false, error: "Your other character is cooling down. The opening stays open for the network." }, "terminal");
+    say({ ok: false, error: "Your other character is cooling down. The talk waits for the network to answer." }, "terminal");
     return;
   }
-  const empty: Role | null = conversation.baseId && conversation.encoderId ? null : conversation.baseId ? "encoder" : "base";
-  const own = empty ? registry.assets.find((asset) => asset.owner === address && asset.role === empty && cooling(registry, asset.id, block) === 0) : undefined;
-  const opening = registry.lines.find((line) => line.convId === convId && !line.replyTo);
+  const opening = registry.lines.find((line) => line.convId === convId && line.side === "talk");
   const plaintext = answer(opening?.plaintext ?? "█", other.tokenId).slice(0, 6);
-  await respondTo({ convId, characterId: other.id, pieceId: own?.id ?? "", plaintext });
+  await answerTalk({ convId, characterId: other.id, base: free("base")[0]?.id ?? "", encoder: free("encoder")[0]?.id ?? "", plaintext });
 }
 
-export function respondTo(input: { convId: string; characterId: string; pieceId: string; plaintext: string }) {
+/** Answer a talk with your character. The base and the same-dialect encoder are optional. */
+export function answerTalk(input: { convId: string; characterId: string; base: string; encoder: string; plaintext: string }) {
   return signed("terminal", async () => {
     const { signTyped } = wallet();
-    const registry = registryNow();
-    const conversation = registry.conversations.find((item) => item.id === input.convId);
-    if (!conversation) return { ok: false, error: "Unknown opening." };
-    const empty: Role | null = conversation.baseId && conversation.encoderId ? null : conversation.baseId ? "encoder" : "base";
-    const message = {
-      openId: input.convId,
-      character: input.characterId,
-      base: empty === "base" ? input.pieceId : "",
-      encoder: empty === "encoder" ? input.pieceId : "",
-    };
-    const signature = await signTyped(respondSpec({ ...message, line: lineCommit(input.plaintext) }));
-    const result = await submit((draft, ms) => submitRespond(draft, { ...message, plaintext: input.plaintext, signature }, ms));
+    const message = { openId: input.convId, character: input.characterId, base: input.base, encoder: input.encoder };
+    const signature = await signTyped(answerSpec({ ...message, line: lineCommit(input.plaintext) }));
+    const result = await submit((draft, ms) => submitAnswer(draft, { ...message, plaintext: input.plaintext, signature }, ms));
     if (result.ok) useApp.setState({ talkId: input.convId });
     return result;
   });
 }
 
-export function includeCallback(convId: string) {
-  return signed("talk", async () => submit((draft, ms) => settleDraw(draft, convId, ms, 2000)));
+/** Take an empty seat of a talk or an answer with one of your bases or encoders. */
+export function joinSeat(input: { convId: string; side: SideName; assetId: string }) {
+  return signed("room", async () => {
+    const { signTyped } = wallet();
+    const message = { openId: input.convId, side: input.side, nft: input.assetId, nonce: nextNonce(registryNow(), input.assetId, "join") };
+    const signature = await signTyped(joinSpec(message));
+    return submit((draft, ms) => submitJoin(draft, { ...message, signature }, ms));
+  });
 }
 
 export function offerIdle(input: { assetId: string; maxUses: number; days: number; allowed: string }) {

@@ -1,9 +1,9 @@
 import { useCallback, useState } from "react";
 import { padId, piece, pieceId, type Role } from "@/lib/trace/catalog";
 import { shortAddress } from "@/lib/protocol/domain";
-import { buildGraph, ranksForRole, ranksForWallets, walletLabel } from "@/lib/protocol/derive";
+import { buildGraph, piecesIn, ranksForRole, ranksForWallets, walletLabel } from "@/lib/protocol/derive";
 import { unix } from "@/lib/protocol/relayer";
-import type { LogRow, Registry } from "@/lib/protocol/types";
+import { SIDES, SLOTS, type LogRow, type Registry } from "@/lib/protocol/types";
 import { delegatePiece, offerIdle, revokeIdle, selectDetail, showConversation, useApp, type View } from "@/lib/store";
 import { Note } from "./help";
 import { useWallet } from "@/lib/wallet/store";
@@ -22,6 +22,9 @@ const LOG_TEXT: Record<LogRow["kind"], string> = {
   Opened: "opened",
   Closed: "closed",
   Expired: "expired",
+  Answered: "answered",
+  Joined: "joined",
+  Pooled: "from pool",
   Delegate: "delegate",
   Linked: "signed in",
 };
@@ -42,11 +45,8 @@ function logSubjects(registry: Registry, row: LogRow): { pieces: string[]; walle
   if (row.refId.startsWith("0x")) return { pieces: [], wallets: [...wallets, row.refId] };
   const conversation = registry.conversations.find((item) => item.id === row.refId);
   if (!conversation) return { pieces: [], wallets };
-  const closure = registry.closures.find((item) => item.id === conversation.closureId);
-  const pieces = [conversation.characterId, conversation.responderId, conversation.baseId, conversation.encoderId].filter((id): id is string => Boolean(id));
-  const held = closure
-    ? [closure.initiatorWallet, closure.responderWallet, closure.baseWallet, closure.encoderWallet].filter((id): id is string => Boolean(id))
-    : [conversation.opener];
+  const pieces = piecesIn(conversation);
+  const held = SIDES.flatMap((side) => SLOTS.map((slot) => conversation[side][slot]?.holder)).filter((id): id is string => Boolean(id));
   return { pieces, wallets: [...wallets, ...held] };
 }
 

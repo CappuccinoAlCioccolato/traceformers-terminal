@@ -6,38 +6,44 @@ Live: https://cappuccinoalcioccolato.github.io/traceformers-terminal/
 
 Unofficial. It references real Trace token ids, traits, and art, and never mutates them.
 
+## How a talk works
+
+A talk has two sides of three seats each: a **character** that speaks, an **encoder** that hides its line, and a **base** that holds the key.
+
+1. A character opens the **talk side**. Its holder can bring their own base and encoder, or leave either seat empty.
+2. Empty seats go to the **waiting room**. Any holder of a base or an encoder can take one with a signature (`Join`). No character is needed.
+3. Once the talk side has all three pieces, its line is encoded and the **answer side** opens. Another character answers and cites the talk's `#`. Its base and encoder can come from its own holder or from anyone in the waiting room. The answer encoder must speak the same dialect as the talk encoder.
+4. When all six seats are taken, the talk closes. If a seat waits too long, a network holder or an idle piece from the pool fills it, so every talk closes.
+
 ## What you can do
 
-- **Wall**: the public stream. Every line shows only its ciphertext. Blink lines decay after one block, lines without a base stay sealed, and replies cluster under the line they answer. Click any line to open its talk.
-- **Talk**: a floating window, from any view: the art of the four pieces, their holders, and who brought the base and the encoder, who answered which `#`, the encoded lines, state and points. Export it as a PNG with the same visuals (no points), or share it on X: the post tags every holder that added an X username, with the pieces each one brought, and stays within 280 characters.
-- **Terminal**: connect, sign in once, and receive 2 characters, 3 bases (classic, inverted, blink), and 3 encoders (binary, base64, punched card). Pick the character that speaks, compose from its own glyphs, then:
-  - **open +base** or **open +encoder**: bring one piece and leave the other slot empty. The answer arrives on its own, from a network character or from your other character.
-  - **complete**: your character brings both a base and an encoder. Another character answers with itself only, at a lower weight.
-  - **answer**: reply to an open conversation; if a slot is empty, fill it with your own piece, an idle piece, or a draw from the idle pool.
-  - Both characters of a talk speak through the same base and encoder; the talk shows who brought each one.
-  - The base and encoder lists follow the mode: a slot left to whoever answers, or already filled by the opener, is not selectable.
-  - **open key** on one of your bases lets you read its talks for 12 blocks (blink: 1). No points move.
-  - Plaintext appears only in your terminal, and only while a base of that talk keeps the key open.
-- **Graph**: every closure as a network of characters, bases, encoders, and holders. Click a node, pick a role and type its `#`, or search a holder by address, name, or @handle, to focus it and see the NFT, its traits, its OpenSea page, and its closures. The log below follows the focus, pages by 25, and draws your transactions in red; each row opens its talk.
-- **Pool**: idle offers. Sign an offer (max uses, expiry, and optionally the only characters that may use it), revoke it, or delegate a piece to another address inside the registry (not a sale, not an Ethereum transfer).
+- **Wall**: the public stream of ciphertext. Blink lines decay after one block, lines whose side has no base stay sealed, and answers cluster under the talk they answer. Click any line to open its talk.
+- **Waiting room** (on the wall): the empty seats of open talks, split into talks and answers. For each seat it lists your pieces that fit and joins with one click and one signature.
+- **Terminal**: connect and sign in once to receive 2 characters, 3 bases (classic, inverted, blink), and 3 encoders (binary, base64, punched card). Pick the character that speaks, compose from the glyphs of its own art, then **talk** or **answer**, bringing your base and encoder or leaving the seats to the waiting room. Without a character, the terminal points you to the waiting room and the pool.
+- **Talk**: a floating window, from any view: both sides with the art of each piece, its holder, how it took its seat, and its points, then the encoded lines. Export it as a PNG with the same visuals, or share it on X: the post tags every holder that added an X username, with the seats it took, and stays within 280 characters.
+- **Graph**: every closure as a network of characters, bases, encoders, and holders. Click a node, pick a role and type its `#`, or search a holder by address, name, or @handle, to focus it and see the NFT, its traits, its OpenSea page, and its closures. The log below follows the focus, pages by 25, and draws your transactions in red.
+- **Pool**: idle offers. One signature lets the relayer seat your base or encoder in talks that wait (max uses, expiry, and optionally the only characters that may use it). Revoke it, or delegate a piece to another address inside the registry (not a sale, not an Ethereum transfer).
 - **Board**: points by wallet or by NFT for each role. Your row is drawn in red; outside the top 10 your rank is pinned under a `[…]` row.
 - Each page has its own short guide under the tabs, folded until you open it.
 
 ## Rules in this version
 
-| Event | Opening character | Answering character | Base | Encoder |
-| --- | --- | --- | --- | --- |
-| Targeted: the opener brings one piece, another holder the other | 3 | 3 | 1 | 1 |
-| Complete: the opener brings both pieces, another holder answers | 1 | 1 | 1 | 1 |
-| Self: the answering character is held by the opener's own wallet | 1 | 0 | 1 | 1 |
+| Seat | Points when the talk closes |
+| --- | --- |
+| Talk character, answer character | 3 each |
+| Talk base, talk encoder, answer base, answer encoder | 1 each |
+| Self-answer: the answering character is held by the talk's own wallet | talk character 1, that wallet's answer seats 0 |
 
-- Every talk gets an answer: the network answers any opening that has waited 3 blocks, never from the opener's own wallet.
-- An opening brings a base, an encoder, or both, and may wait 2 minutes to 2 hours.
-- Only the holder at inclusion time can sign; after a delegation, earlier signatures on that piece stop counting.
+- A talk may wait 2 minutes to 2 hours. The network answers after 3 blocks, takes empty seats after 4, and the pool fills them after 5.
+- Only the holder at inclusion time can sign. After a delegation, the piece leaves every seat of every open talk.
 - Idle offers stand until revoked, with an optional cap on uses, an optional expiry, and an optional list of the only characters allowed to use them.
-- Another character of the same wallet may answer, but that answer earns nothing.
-- The draw from the idle pool uses a relayer seed published with the closure, standing in for Chainlink VRF. If the pool is empty, offers are not consumed.
-- Each piece cools down for 3 blocks after it acts. A block is 6.5 seconds.
+- Each piece cools down for 3 blocks after it takes a seat. A block is 6.5 seconds.
+
+## How the encoding works
+
+The encoders are dialects, not encryption. **Base64** and **binary** are reversible encodings of the glyphs, and **punched card** is a one-way hash pattern. Privacy in this build is a rule of the app, not cryptography: the plaintext lives only in your browser, and the terminal shows it only to holders of a piece in that talk, and only while the base of that side keeps its key open.
+
+Traits that matter: the character's art defines the glyphs it can speak, the encoder's Method trait sets its dialect, and the base's Form sets how long the key stays open (classic and inverted 12 blocks, blink 1). Palette, Motion, and the encoder's Form do not play a role yet.
 
 ## How it runs
 
