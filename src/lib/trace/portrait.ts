@@ -19,7 +19,9 @@ export function mulberry32(seed: number) {
   };
 }
 
-function put(cells: string[][], x: number, y: number, ch: string) {
+function put(cells: string[][], rawX: number, rawY: number, ch: string) {
+  const x = Math.round(rawX);
+  const y = Math.round(rawY);
   if (y < 0 || y >= ROWS || x < 0 || x >= COLS) return;
   cells[y][x] = ch;
 }
